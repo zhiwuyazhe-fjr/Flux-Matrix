@@ -7,8 +7,7 @@ const { createClient } = require('@supabase/supabase-js');
 const {
   SUPABASE_URL,
   SUPABASE_ANON_KEY,
-  SUPABASE_SERVICE_ROLE_KEY,
-  PORT = 3001
+  SUPABASE_SERVICE_ROLE_KEY
 } = process.env;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -400,6 +399,4 @@ app.post('/api/profile', requireAuth, async (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend listening on http://localhost:${PORT}`);
-});
+module.exports = app;
