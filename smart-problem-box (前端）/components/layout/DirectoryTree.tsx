@@ -8,9 +8,12 @@ interface DirectoryTreeProps {
   nodes: TreeNode[];
   level?: number;
   parentId?: string | null;
+  selectedNodeIds?: string[];
+  onToggleSelect?: (node: TreeNode) => void;
+  selectMode?: boolean;
 }
 
-const DirectoryTree: React.FC<DirectoryTreeProps> = ({ nodes, level = 0, parentId = null }) => {
+const DirectoryTree: React.FC<DirectoryTreeProps> = ({ nodes, level = 0, parentId = null, selectedNodeIds = [], onToggleSelect, selectMode = false }) => {
   const { state, toggleNodeExpansion, setCurrentProblem, setSelectedFolder, setViewMode, deleteNode } = useStore();
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
 
@@ -33,6 +36,7 @@ const DirectoryTree: React.FC<DirectoryTreeProps> = ({ nodes, level = 0, parentI
         const isExpanded = state.expandedNodes.includes(node.id);
         const isActiveFile = node.type === 'file' && state.currentProblemId === node.problemId;
         const isActiveFolder = node.type === 'folder' && state.selectedFolderId === node.id;
+        const isSelected = selectedNodeIds.includes(node.id);
         
         const paddingLeft = 12 + level * 12; // Indentation logic
 
@@ -85,6 +89,17 @@ const DirectoryTree: React.FC<DirectoryTreeProps> = ({ nodes, level = 0, parentI
                     }
                 }}
               >
+                {selectMode && onToggleSelect && (
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      onToggleSelect(node);
+                    }}
+                    className="h-3 w-3 accent-primary"
+                  />
+                )}
                 <div className="flex-none opacity-70">
                     {node.type === 'folder' ? (
                         isExpanded ? (
@@ -122,7 +137,14 @@ const DirectoryTree: React.FC<DirectoryTreeProps> = ({ nodes, level = 0, parentI
 
             {/* Recursive Render */}
             {node.type === 'folder' && isExpanded && node.children && (
-              <DirectoryTree nodes={node.children} level={level + 1} parentId={node.id} />
+              <DirectoryTree
+                nodes={node.children}
+                level={level + 1}
+                parentId={node.id}
+                selectedNodeIds={selectedNodeIds}
+                onToggleSelect={onToggleSelect}
+                selectMode={selectMode}
+              />
             )}
           </div>
         );

@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { TreeNode } from '../../types';
+import { apiAnalyzeImport, apiFetchQuestions, apiSaveQuestions } from '../../api';
 import { 
     CloudUpload, 
     ChevronDown, 
@@ -15,13 +16,34 @@ import {
     Folder,
     FolderPlus,
     ChevronRight,
-    Search
+    Search,
+    Upload,
+    ListChecks
 } from 'lucide-react';
+
+type ImportedQuestion = {
+    id: string;
+    image_url: string;
+    summary?: string;
+    content?: string;
+    status: string;
+    created_at: string;
+};
 
 const ImportWorkbench: React.FC = () => {
     const { treeData, setViewMode, toggleSidebar, state, setColumnWidth, addNewFolder } = useStore();
     const [zoom, setZoom] = useState(100);
     const [isResizing, setIsResizing] = useState(false);
+    const [isUploading, setIsUploading] = useState(false);
+    const [uploadError, setUploadError] = useState('');
+    const [questions, setQuestions] = useState<ImportedQuestion[]>([]);
+    const [isLoadingQuestions, setIsLoadingQuestions] = useState(false);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [candidates, setCandidates] = useState<Array<{ content: string }>>([]);
+    const [analysisImageUrl, setAnalysisImageUrl] = useState<string>('');
+    const [isSaving, setIsSaving] = useState(false);
+    const [selectedCandidateIndexes, setSelectedCandidateIndexes] = useState<number[]>([]);
+    const [isCandidateSelectMode, setIsCandidateSelectMode] = useState(false);
     
     // Custom Dropdown State
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -30,6 +52,7 @@ const ImportWorkbench: React.FC = () => {
     const [isCreatingFolder, setIsCreatingFolder] = useState(false);
     const [newFolderTitle, setNewFolderTitle] = useState('');
     const dropdownRef = useRef<HTMLDivElement>(null);
+    const uploadInputRef = useRef<HTMLInputElement>(null);
 
     // Close dropdown on outside click
     useEffect(() => {
@@ -42,6 +65,21 @@ const ImportWorkbench: React.FC = () => {
         document.addEventListener('mousedown', handleClickOutside);
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
+
+    const fetchQuestions = useCallback(async () => {
+        setIsLoadingQuestions(true);
+        try {
+            const { questions } = await apiFetchQuestions();
+            setQuestions(questions);
+        } catch (error) {
+            console.error('获取题目失败：', error);
+        }
+        setIsLoadingQuestions(false);
+    }, []);
+
+    useEffect(() => {
+        fetchQuestions();
+    }, [fetchQuestions]);
 
     const startResizing = useCallback((e: React.MouseEvent) => {
         e.preventDefault();
@@ -87,6 +125,99 @@ const ImportWorkbench: React.FC = () => {
             setNewFolderTitle('');
             setIsCreatingFolder(false);
         }
+    };
+
+    const handleUpload = async (file: File) => {
+        if (isUploading) return;
+        setIsUploading(true);
+        setUploadError('');
+
+        try {
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result as string);
+                reader.onerror = () => reject(new Error('读取图片失败'));
+                reader.readAsDataURL(file);
+            });
+
+            setIsAnalyzing(true);
+            const { imageUrl, candidates: nextCandidates } = await apiAnalyzeImport({ dataUrl });
+            setAnalysisImageUrl(imageUrl);
+            setCandidates(nextCandidates);
+            setSelectedCandidateIndexes([]);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : '上传失败，请稍后再试';
+            setUploadError(message);
+            alert(message);
+        } finally {
+            setIsUploading(false);
+            setIsAnalyzing(false);
+            if (uploadInputRef.current) {
+                uploadInputRef.current.value = '';
+            }
+        }
+    };
+
+    const handleSaveAll = async () => {
+        if (!analysisImageUrl || candidates.length === 0) {
+            alert('没有可保存的题目');
+            return;
+        }
+        if (isSaving) return;
+        try {
+            setIsSaving(true);
+            const cleaned = candidates.map(item => ({ content: item.content.trim() })).filter(item => item.content);
+            if (cleaned.length === 0) {
+                alert('题目内容不能为空');
+                return;
+            }
+            await apiSaveQuestions({ imageUrl: analysisImageUrl, items: cleaned, parentFolderId: targetFolder?.id || null });
+            setCandidates([]);
+            setAnalysisImageUrl('');
+            setSelectedCandidateIndexes([]);
+            setIsCandidateSelectMode(false);
+            fetchQuestions();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : '保存失败，请稍后再试';
+            alert(message);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) handleUpload(file);
+    };
+
+    const toggleCandidateSelect = (index: number) => {
+        setSelectedCandidateIndexes(prev => (
+            prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index]
+        ));
+    };
+
+    const toggleSelectAllCandidates = () => {
+        if (selectedCandidateIndexes.length === candidates.length) {
+            setSelectedCandidateIndexes([]);
+        } else {
+            setSelectedCandidateIndexes(candidates.map((_, idx) => idx));
+        }
+    };
+
+    const handleBatchDeleteCandidates = () => {
+        if (selectedCandidateIndexes.length === 0) return;
+        setCandidates(prev => prev.filter((_, idx) => !selectedCandidateIndexes.includes(idx)));
+        setSelectedCandidateIndexes([]);
+    };
+
+    const toggleCandidateSelectMode = () => {
+        setIsCandidateSelectMode(prev => {
+            const next = !prev;
+            if (!next) {
+                setSelectedCandidateIndexes([]);
+            }
+            return next;
+        });
     };
 
     // Recursive rendering for custom dropdown
@@ -155,6 +286,23 @@ const ImportWorkbench: React.FC = () => {
                 </div>
                 
                 <div className="p-6 flex flex-col gap-8 flex-1 overflow-y-auto">
+                    {/* Upload Action */}
+                    <button
+                        type="button"
+                        onClick={() => uploadInputRef.current?.click()}
+                        disabled={isUploading}
+                        className="w-full bg-primary hover:bg-blue-600 text-white font-medium py-2.5 rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20 disabled:opacity-70 disabled:cursor-wait"
+                    >
+                        {isUploading ? (
+                            <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                        ) : (
+                            <>
+                                <Upload size={16} />
+                                导入题目
+                            </>
+                        )}
+                    </button>
+
                     {/* Upload Area */}
                     <div className="flex flex-col gap-3">
                         <div className="group relative w-full h-64 border-2 border-dashed border-zinc-300 dark:border-zinc-700 rounded-xl bg-zinc-50 dark:bg-zinc-800/30 hover:bg-zinc-100 dark:hover:bg-zinc-800/50 hover:border-primary/50 transition-all cursor-pointer flex flex-col items-center justify-center gap-4 text-center">
@@ -165,8 +313,18 @@ const ImportWorkbench: React.FC = () => {
                                 <p className="text-sm font-medium text-zinc-900 dark:text-white group-hover:text-primary transition-colors">点击或拖拽文件到此处</p>
                                 <p className="text-xs text-zinc-500 mt-1">支持 PDF, PNG, JPG (最大 20MB)</p>
                             </div>
-                            <input className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" type="file"/>
+                            <input
+                                ref={uploadInputRef}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                type="file"
+                                accept="image/*"
+                                onChange={handleFileChange}
+                                disabled={isUploading}
+                            />
                         </div>
+                        {uploadError && (
+                            <div className="text-xs text-red-600">{uploadError}</div>
+                        )}
                     </div>
 
                     {/* Options */}
@@ -271,8 +429,7 @@ const ImportWorkbench: React.FC = () => {
                 {/* Preview Header */}
                 <header className="h-16 flex items-center justify-between px-6 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 sticky top-0 z-10">
                     <div className="flex items-center gap-4">
-                        <h2 className="text-base font-semibold text-zinc-900 dark:text-white">拆分预览</h2>
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 border border-zinc-200 dark:border-zinc-700">1 页</span>
+                        <h2 className="text-base font-semibold text-zinc-900 dark:text-white">识别结果确认</h2>
                     </div>
                     <div className="flex items-center gap-4">
                         <div className="flex items-center bg-zinc-100 dark:bg-zinc-800 rounded-lg p-1 border border-zinc-200 dark:border-zinc-700/50">
@@ -297,91 +454,107 @@ const ImportWorkbench: React.FC = () => {
                     </div>
                 </header>
 
-                {/* Canvas Area */}
-                <div className="flex-1 overflow-y-auto p-8 flex justify-center bg-zinc-100 dark:bg-black relative">
-                    <div 
-                        className="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-200 shadow-2xl shadow-zinc-200 dark:shadow-black rounded-sm p-12 relative flex flex-col gap-6 ring-1 ring-zinc-200 dark:ring-white/10 group select-none transition-colors"
-                        style={{ width: '600px', height: '850px', transform: `scale(${zoom / 100})`, transformOrigin: 'top center', transition: 'transform 0.2s, background-color 0.2s' }}
-                    >
-                        {/* Header Mockup */}
-                        <div className="flex justify-between items-end border-b-2 border-zinc-200 dark:border-zinc-600/30 pb-4 mb-4">
-                            <div>
-                                <div className="h-6 w-48 bg-zinc-200 dark:bg-zinc-600 rounded-sm mb-2"></div>
-                                <div className="h-4 w-32 bg-zinc-300 dark:bg-zinc-700 rounded-sm"></div>
-                            </div>
-                            <div className="h-12 w-12 border border-zinc-200 dark:border-zinc-600 bg-zinc-100 dark:bg-zinc-700/50"></div>
-                        </div>
-
-                        {/* Problem 1 */}
-                        <div className="space-y-3">
-                            <div className="flex gap-3">
-                                <span className="font-bold text-lg text-zinc-700 dark:text-zinc-300">1.</span>
-                                <div className="flex-1 space-y-2">
-                                    <div className="h-4 w-full bg-zinc-200 dark:bg-zinc-600/50 rounded-sm"></div>
-                                    <div className="h-4 w-11/12 bg-zinc-200 dark:bg-zinc-600/50 rounded-sm"></div>
-                                    <div className="h-4 w-3/4 bg-zinc-200 dark:bg-zinc-600/50 rounded-sm"></div>
-                                </div>
-                            </div>
-                            <div className="pl-8 pt-2">
-                                <div className="h-24 w-full bg-zinc-50 dark:bg-zinc-700/30 border border-zinc-200 dark:border-zinc-600/50 rounded p-4 flex items-center justify-center">
-                                    <ImageIcon className="text-zinc-400 dark:text-zinc-500" size={32} />
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Splitter Line UI */}
-                        <div className="absolute left-0 right-0 top-[42%] flex items-center group/split">
-                            <div className="w-full border-t-2 border-dashed border-primary shadow-[0_0_10px_rgba(59,130,246,0.3)]"></div>
-                            <div className="absolute right-0 -top-3.5 bg-primary text-white text-[10px] font-bold px-2 py-0.5 rounded-l shadow-lg shadow-blue-900/50 flex items-center gap-1 cursor-pointer hover:bg-blue-600 transition-colors z-10">
-                                <Sparkles size={12} />
-                                Auto-Split
-                            </div>
-                            <button className="absolute left-1/2 -translate-x-1/2 -top-3 bg-white dark:bg-zinc-800 border border-primary text-primary rounded-full p-0.5 shadow-md opacity-0 group-hover/split:opacity-100 transition-opacity">
-                                <X size={16} />
+                {/* Confirm Panel */}
+                <div className="flex-1 px-6 py-4 bg-white dark:bg-zinc-900 overflow-y-auto">
+                    <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-sm font-semibold text-zinc-900 dark:text-white">识别结果确认</h3>
+                        <div className="flex items-center gap-2">
+                            {isAnalyzing && <span className="text-xs text-primary">分析中...</span>}
+                            {isCandidateSelectMode && (
+                              <>
+                                <button
+                                    type="button"
+                                    onClick={toggleSelectAllCandidates}
+                                    className="text-[10px] text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-200 border border-zinc-200 dark:border-zinc-700 px-2 py-0.5 rounded"
+                                >
+                                    {selectedCandidateIndexes.length === candidates.length && candidates.length > 0 ? '取消全选' : '全选'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleBatchDeleteCandidates}
+                                    className={`text-[10px] px-2 py-0.5 rounded border ${
+                                      selectedCandidateIndexes.length === 0
+                                        ? 'text-zinc-400 border-zinc-200 dark:border-zinc-700 cursor-not-allowed'
+                                        : 'text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-900/10'
+                                    }`}
+                                >
+                                    批量删除
+                                </button>
+                              </>
+                            )}
+                            <button
+                                type="button"
+                                onClick={toggleCandidateSelectMode}
+                                className="p-1 rounded border border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-200"
+                                title={isCandidateSelectMode ? '退出多选' : '多选'}
+                            >
+                                {isCandidateSelectMode ? <X size={14} /> : <ListChecks size={14} />}
                             </button>
                         </div>
-
-                        {/* Problem 2 (Faded for effect) */}
-                        <div className="space-y-3 mt-12 opacity-80">
-                            <div className="flex gap-3">
-                                <span className="font-bold text-lg text-zinc-700 dark:text-zinc-300">2.</span>
-                                <div className="flex-1 space-y-2">
-                                    <div className="h-4 w-full bg-zinc-200 dark:bg-zinc-600/50 rounded-sm"></div>
-                                    <div className="h-4 w-full bg-zinc-200 dark:bg-zinc-600/50 rounded-sm"></div>
-                                    <div className="h-4 w-5/6 bg-zinc-200 dark:bg-zinc-600/50 rounded-sm"></div>
+                    </div>
+                    {candidates.length === 0 ? (
+                        <div className="text-xs text-zinc-500">上传图片后将在这里显示待确认题目</div>
+                    ) : (
+                        <div className="space-y-3 pr-1">
+                            {candidates.map((item, index) => (
+                                <div key={index} className="bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-800 rounded-lg p-3 space-y-2">
+                                    {isCandidateSelectMode && (
+                                      <div className="flex items-center gap-2">
+                                          <input
+                                              type="checkbox"
+                                              checked={selectedCandidateIndexes.includes(index)}
+                                              onChange={() => toggleCandidateSelect(index)}
+                                              className="h-3 w-3 accent-primary"
+                                          />
+                                          <span className="text-xs text-zinc-500">题目 {index + 1}</span>
+                                      </div>
+                                    )}
+                                    <textarea
+                                        value={item.content}
+                                        onChange={(e) => {
+                                            const value = e.target.value;
+                                            setCandidates(prev => prev.map((c, i) => i === index ? { ...c, content: value } : c));
+                                        }}
+                                        className="w-full min-h-[80px] bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-md p-2 text-xs text-zinc-800 dark:text-zinc-200 focus:ring-1 focus:ring-primary outline-none"
+                                    />
+                                    <div className="flex justify-between text-[10px] text-zinc-500">
+                                        <button
+                                            type="button"
+                                            onClick={() => setCandidates(prev => prev.filter((_, i) => i !== index))}
+                                            className="text-red-500 hover:text-red-600"
+                                        >
+                                            删除此题
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setCandidates(prev => {
+                                                const next = [...prev];
+                                                next.splice(index + 1, 0, { content: '' });
+                                                return next;
+                                            })}
+                                            className="text-primary hover:text-blue-600"
+                                        >
+                                            添加新题
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
-                            <div className="pl-8 grid grid-cols-2 gap-4 pt-2">
-                                <div className="h-4 w-full bg-zinc-200 dark:bg-zinc-700/40 rounded-sm"></div>
-                                <div className="h-4 w-full bg-zinc-200 dark:bg-zinc-700/40 rounded-sm"></div>
-                                <div className="h-4 w-full bg-zinc-200 dark:bg-zinc-700/40 rounded-sm"></div>
-                                <div className="h-4 w-full bg-zinc-200 dark:bg-zinc-700/40 rounded-sm"></div>
-                            </div>
+                            ))}
                         </div>
-
-                        {/* Footer Page Number */}
-                        <div className="absolute bottom-8 left-0 right-0 text-center">
-                            <span className="text-xs text-zinc-400 dark:text-zinc-600">- 1 -</span>
-                        </div>
+                    )}
+                    <div className="flex justify-end mt-4">
+                        <button
+                            type="button"
+                            onClick={handleSaveAll}
+                            className={`px-5 py-2.5 rounded-lg text-sm font-medium bg-primary hover:bg-blue-600 text-white shadow-lg shadow-blue-500/20 flex items-center gap-2 ${candidates.length === 0 || isSaving ? 'opacity-60 cursor-not-allowed' : ''}`}
+                        >
+                            {isSaving && (
+                                <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin"></span>
+                            )}
+                            {isSaving ? '保存中...' : '确认保存'}
+                        </button>
                     </div>
                 </div>
 
-                {/* Footer Action Bar */}
-                <div className="h-20 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex items-center justify-end px-8 gap-4 z-20">
-                    <button 
-                        onClick={() => setViewMode('study')}
-                        className="px-5 py-2.5 rounded-lg text-sm font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-white transition-colors"
-                    >
-                        取消
-                    </button>
-                    <button 
-                         onClick={() => setViewMode('study')}
-                         className="px-5 py-2.5 rounded-lg text-sm font-medium bg-primary hover:bg-blue-600 text-white shadow-lg shadow-blue-500/20 transition-all flex items-center gap-2"
-                    >
-                        <Check size={18} />
-                        确认并导入
-                    </button>
-                </div>
             </main>
         </>
     );

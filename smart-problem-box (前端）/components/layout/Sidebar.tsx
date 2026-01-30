@@ -1,13 +1,15 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useStore } from '../../context/StoreContext';
 import DirectoryTree from './DirectoryTree';
-import { GraduationCap, Bookmark, Settings, User, Plus, LogOut, CreditCard, HelpCircle } from 'lucide-react';
+import { GraduationCap, Bookmark, Settings, User, Plus, LogOut, CreditCard, HelpCircle, Trash2, ListChecks, X } from 'lucide-react';
 
 const Sidebar: React.FC = () => {
-  const { state, problems, setCurrentProblem, treeData, setViewMode, logout } = useStore();
+  const { state, problems, setCurrentProblem, treeData, setViewMode, logout, deleteNodesBatch } = useStore();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [isSelectMode, setIsSelectMode] = useState(false);
 
   const favoriteProblems = state.favorites
     .map((id) => problems[id])
@@ -27,6 +29,57 @@ const Sidebar: React.FC = () => {
   const handleMenuClick = (action: () => void) => {
       action();
       setIsSettingsOpen(false);
+  };
+
+  const nodeMap = useMemo(() => {
+    const map = new Map<string, any>();
+    const traverse = (nodes: any[]) => {
+      nodes.forEach((node) => {
+        map.set(node.id, node);
+        if (node.children) traverse(node.children);
+      });
+    };
+    traverse(treeData);
+    return map;
+  }, [treeData]);
+
+  const collectDescendantIds = (nodeId: string): string[] => {
+    const node = nodeMap.get(nodeId);
+    if (!node) return [];
+    const ids: string[] = [node.id];
+    if (node.children) {
+      node.children.forEach((child: any) => {
+        ids.push(...collectDescendantIds(child.id));
+      });
+    }
+    return ids;
+  };
+
+  const toggleSelectNode = (node: any) => {
+    const idsToToggle = node.type === 'folder' ? collectDescendantIds(node.id) : [node.id];
+    setSelectedNodeIds(prev => {
+      const isSelected = idsToToggle.every(id => prev.includes(id));
+      if (isSelected) {
+        return prev.filter(id => !idsToToggle.includes(id));
+      }
+      return Array.from(new Set([...prev, ...idsToToggle]));
+    });
+  };
+
+  const clearSelection = () => setSelectedNodeIds([]);
+
+  const handleBatchDelete = () => {
+    if (selectedNodeIds.length === 0) return;
+    deleteNodesBatch(selectedNodeIds);
+    clearSelection();
+  };
+
+  const toggleSelectMode = () => {
+    setIsSelectMode(prev => {
+      const next = !prev;
+      if (!next) clearSelection();
+      return next;
+    });
   };
 
   return (
@@ -68,8 +121,40 @@ const Sidebar: React.FC = () => {
 
         {/* Section 2: Directory Tree */}
         <div className="flex flex-col gap-1">
-          <p className="px-5 text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">题库</p>
-          <DirectoryTree nodes={treeData} />
+          <div className="px-5 flex items-center justify-between mb-2">
+            <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">题库</p>
+            <div className="flex items-center gap-2">
+              {isSelectMode && (
+                <>
+                  <span className="text-[10px] text-zinc-500">已选 {selectedNodeIds.length}</span>
+                  <button
+                    onClick={handleBatchDelete}
+                    className={`text-[10px] flex items-center gap-1 px-2 py-1 rounded border ${
+                      selectedNodeIds.length === 0
+                        ? 'text-zinc-400 border-zinc-200 dark:border-zinc-700 cursor-not-allowed'
+                        : 'text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-900/10'
+                    }`}
+                  >
+                    <Trash2 size={12} />
+                    批量删除
+                  </button>
+                </>
+              )}
+              <button
+                onClick={toggleSelectMode}
+                className="p-1 rounded border border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-200"
+                title={isSelectMode ? '退出多选' : '多选'}
+              >
+                {isSelectMode ? <X size={14} /> : <ListChecks size={14} />}
+              </button>
+            </div>
+          </div>
+          <DirectoryTree
+            nodes={treeData}
+            selectedNodeIds={selectedNodeIds}
+            onToggleSelect={toggleSelectNode}
+            selectMode={isSelectMode}
+          />
         </div>
       </div>
 

@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { GraduationCap, ArrowRight, Mail, Lock, User, ArrowLeft } from 'lucide-react';
+import { GraduationCap, ArrowRight, Mail, Lock, User, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 
 const RegisterView: React.FC = () => {
   const { register, setViewMode } = useStore();
@@ -10,6 +10,7 @@ const RegisterView: React.FC = () => {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,14 +84,22 @@ const RegisterView: React.FC = () => {
                         <div className="relative">
                             <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={16} />
                             <input 
-                                type="password" 
+                                type={showPassword ? "text" : "password"} 
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
-                                className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg py-2.5 pl-10 pr-4 text-sm text-zinc-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all"
+                                className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg py-2.5 pl-10 pr-10 text-sm text-zinc-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all"
                                 placeholder="至少6位字符"
                                 minLength={6}
                                 required
                             />
+                            <button
+                                type="button"
+                                onClick={() => setShowPassword((prev) => !prev)}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
+                                aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                            >
+                                {showPassword ? <Eye size={16} /> : <EyeOff size={16} />}
+                            </button>
                         </div>
                     </div>
 

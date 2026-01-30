@@ -1,9 +1,15 @@
 
 import React, { useState, useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
 import { useStore } from '../../context/StoreContext';
 import { Problem } from '../../types';
 import { Bookmark, Lightbulb, TriangleAlert, ExternalLink, Download, ChevronDown, ListOrdered, ZoomIn, X, Sparkles, Send } from 'lucide-react';
 import { InlineMath } from 'react-katex';
+import { apiAnalyzeQuestionText } from '../../api';
+import type { AnalysisResult } from '../../types/analysis';
 
 interface StudyViewProps {
   problem: Problem;
@@ -21,6 +27,10 @@ const StudyView: React.FC<StudyViewProps> = ({ problem }) => {
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [questionText, setQuestionText] = useState(problem.description || problem.title);
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState('');
 
   // Auto-scroll chat to bottom
   useEffect(() => {
@@ -43,6 +53,24 @@ const StudyView: React.FC<StudyViewProps> = ({ problem }) => {
         }]);
         setIsChatLoading(false);
     }, 1500);
+  };
+
+  const handleAnalyze = async () => {
+    if (!questionText.trim()) {
+      setAnalysisError('题目文本不能为空');
+      return;
+    }
+    setIsAnalyzing(true);
+    setAnalysisError('');
+    try {
+      const { result } = await apiAnalyzeQuestionText({ questionText: questionText.trim() });
+      setAnalysisResult(result as AnalysisResult);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '分析失败，请稍后再试';
+      setAnalysisError(message);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   return (
@@ -82,6 +110,72 @@ const StudyView: React.FC<StudyViewProps> = ({ problem }) => {
                     点击查看大图
                 </div>
             </div>
+        </div>
+
+        {/* AI Analysis */}
+        <div className="flex flex-col gap-4 p-5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-[#1c1c21]">
+            <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-zinc-900 dark:text-white">AI 题目深度分析</h3>
+                <button
+                    onClick={handleAnalyze}
+                    disabled={isAnalyzing}
+                    className="px-4 py-2 rounded-lg text-sm font-medium bg-primary hover:bg-blue-600 text-white shadow-lg shadow-blue-500/20 disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                    {isAnalyzing ? '分析中...' : '开始分析'}
+                </button>
+            </div>
+            <textarea
+                value={questionText}
+                onChange={(e) => setQuestionText(e.target.value)}
+                className="w-full min-h-[120px] bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg p-3 text-sm text-zinc-900 dark:text-white focus:ring-1 focus:ring-primary outline-none"
+                placeholder="请输入题目文本"
+            />
+            {analysisError && <div className="text-xs text-red-600">{analysisError}</div>}
+            {analysisResult && (
+                <div className="space-y-6">
+                    <div className="p-4 rounded-lg bg-primary/5 border border-primary/20">
+                        <p className="text-sm font-semibold text-primary mb-1">本质总结</p>
+                        <p className="text-sm text-zinc-700 dark:text-zinc-300">{analysisResult.essence_one_sentence}</p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                        {[analysisResult.tags.big, analysisResult.tags.mid, analysisResult.tags.small].map((tag) => (
+                            <span key={tag} className="text-xs px-2 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-700">
+                                {tag}
+                            </span>
+                        ))}
+                    </div>
+
+                    <div>
+                        <h4 className="text-sm font-semibold text-zinc-900 dark:text-white mb-2">逻辑策略</h4>
+                        <div className="prose prose-sm dark:prose-invert max-w-none">
+                            <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                {analysisResult.learning_mode.logic_strategy}
+                            </ReactMarkdown>
+                        </div>
+                    </div>
+
+                    <div>
+                        <h4 className="text-sm font-semibold text-zinc-900 dark:text-white mb-2">解题步骤</h4>
+                        <div className="space-y-3">
+                            {analysisResult.learning_mode.solution_steps.map((step) => (
+                                <details key={step.step_seq} className="group border border-zinc-200 dark:border-zinc-800 rounded-lg p-3">
+                                    <summary className="flex items-center justify-between cursor-pointer text-sm font-medium text-zinc-800 dark:text-zinc-200">
+                                        <span>步骤 {step.step_seq}: {step.goal}</span>
+                                        <ChevronDown className="text-zinc-400 group-open:rotate-180 transition-transform" size={16} />
+                                    </summary>
+                                    <div className="mt-3 prose prose-sm dark:prose-invert max-w-none">
+                                        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                            {step.details}
+                                        </ReactMarkdown>
+                                    </div>
+                                    <p className="text-xs text-zinc-500 mt-2">检查点：{step.check_point}</p>
+                                </details>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
 
         {/* Concept Card */}

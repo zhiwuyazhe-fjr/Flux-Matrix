@@ -1,14 +1,15 @@
 
 import React, { useState } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { GraduationCap, ArrowRight, Mail, Lock } from 'lucide-react';
+import { GraduationCap, ArrowRight, Mail, Lock, Eye, EyeOff } from 'lucide-react';
 
 const LoginView: React.FC = () => {
   const { login, setViewMode } = useStore();
-  const [email, setEmail] = useState('user@example.com');
-  const [password, setPassword] = useState('password');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [authError, setAuthError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,7 +40,7 @@ const LoginView: React.FC = () => {
                     <p className="text-zinc-500 text-sm">请输入您的账号信息以继续</p>
                 </div>
 
-                <form onSubmit={handleSubmit} className="space-y-4">
+                <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
                     <div className="space-y-1">
                         <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">邮箱</label>
                         <div className="relative">
@@ -50,6 +51,7 @@ const LoginView: React.FC = () => {
                                 onChange={(e) => setEmail(e.target.value)}
                                 className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg py-2.5 pl-10 pr-4 text-sm text-zinc-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all"
                                 placeholder="name@example.com"
+                                autoComplete="off"
                                 required
                             />
                         </div>
@@ -69,13 +71,22 @@ const LoginView: React.FC = () => {
                         <div className="relative">
                             <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={16} />
                             <input 
-                                type="password" 
+                                type={showPassword ? "text" : "password"} 
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
-                                className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg py-2.5 pl-10 pr-4 text-sm text-zinc-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all"
+                                className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg py-2.5 pl-10 pr-10 text-sm text-zinc-900 dark:text-white focus:ring-2 focus:ring-primary focus:border-transparent outline-none transition-all"
                                 placeholder="••••••••"
+                                autoComplete="off"
                                 required
                             />
+                            <button
+                                type="button"
+                                onClick={() => setShowPassword((prev) => !prev)}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
+                                aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                            >
+                                {showPassword ? <Eye size={16} /> : <EyeOff size={16} />}
+                            </button>
                         </div>
                     </div>
 

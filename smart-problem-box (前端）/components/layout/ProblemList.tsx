@@ -1,12 +1,14 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { Search, Filter, FolderOpen, PanelLeft, Check, Trash2 } from 'lucide-react';
+import { Search, Filter, FolderOpen, PanelLeft, Check, Trash2, ListChecks, X } from 'lucide-react';
 
 const ProblemList: React.FC = () => {
-  const { filteredProblems, state, setCurrentProblem, toggleSidebar, setDifficultyFilter, deleteProblem } = useStore();
+  const { filteredProblems, state, setCurrentProblem, toggleSidebar, setDifficultyFilter, deleteProblem, deleteProblemsBatch } = useStore();
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const filterRef = useRef<HTMLDivElement>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [isSelectMode, setIsSelectMode] = useState(false);
   
   // Context Menu State
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; problemId: string } | null>(null);
@@ -23,6 +25,38 @@ const ProblemList: React.FC = () => {
     // Use click for standard closing interaction, mousedown for immediate response
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    setSelectedIds(prev => prev.filter(id => filteredProblems.some(p => p.id === id)));
+  }, [filteredProblems]);
+
+  const toggleSelect = (problemId: string) => {
+    setSelectedIds(prev => (
+      prev.includes(problemId) ? prev.filter(id => id !== problemId) : [...prev, problemId]
+    ));
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.length === filteredProblems.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filteredProblems.map(p => p.id));
+    }
+  };
+
+  const handleBatchDelete = () => {
+    if (selectedIds.length === 0) return;
+    deleteProblemsBatch(selectedIds);
+    setSelectedIds([]);
+  };
+
+  const toggleSelectMode = () => {
+    setIsSelectMode(prev => {
+      const next = !prev;
+      if (!next) setSelectedIds([]);
+      return next;
+    });
+  };
 
   const handleContextMenu = (e: React.MouseEvent, problemId: string) => {
     e.preventDefault();
@@ -92,6 +126,13 @@ const ProblemList: React.FC = () => {
                 </div>
             )}
         </div>
+        <button
+          onClick={toggleSelectMode}
+          className="p-2 rounded-lg flex-none border border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-200"
+          title={isSelectMode ? '退出多选' : '多选'}
+        >
+          {isSelectMode ? <X size={16} /> : <ListChecks size={16} />}
+        </button>
       </div>
 
       {/* Info Bar */}
@@ -105,7 +146,29 @@ const ProblemList: React.FC = () => {
                  </span>
             )}
          </span>
-         <span className="text-xs font-medium text-zinc-400 flex-none">{filteredProblems.length} 个</span>
+         <div className="flex items-center gap-2 flex-none">
+            {isSelectMode && (
+              <>
+                <button
+                  onClick={toggleSelectAll}
+                  className="text-[10px] text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-200 border border-zinc-200 dark:border-zinc-700 px-2 py-0.5 rounded"
+                >
+                  {selectedIds.length === filteredProblems.length && filteredProblems.length > 0 ? '取消全选' : '全选'}
+                </button>
+                <button
+                  onClick={handleBatchDelete}
+                  className={`text-[10px] px-2 py-0.5 rounded border ${
+                    selectedIds.length === 0
+                      ? 'text-zinc-400 border-zinc-200 dark:border-zinc-700 cursor-not-allowed'
+                      : 'text-red-600 border-red-200 hover:bg-red-50 dark:hover:bg-red-900/10'
+                  }`}
+                >
+                  批量删除
+                </button>
+              </>
+            )}
+            <span className="text-xs font-medium text-zinc-400 flex-none">{filteredProblems.length} 个</span>
+         </div>
       </div>
 
       {/* List */}
@@ -132,9 +195,22 @@ const ProblemList: React.FC = () => {
                 `}
                 >
                 <div className="flex justify-between items-start w-full gap-2">
-                    <h3 className={`text-sm font-bold truncate leading-snug ${isActive ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-300'}`}>
+                    <div className="flex items-center gap-2 min-w-0">
+                        {isSelectMode && (
+                          <input
+                              type="checkbox"
+                              checked={selectedIds.includes(problem.id)}
+                              onChange={(e) => {
+                                  e.stopPropagation();
+                                  toggleSelect(problem.id);
+                              }}
+                              className="h-3 w-3 accent-primary"
+                          />
+                        )}
+                        <h3 className={`text-sm font-bold truncate leading-snug ${isActive ? 'text-zinc-900 dark:text-zinc-100' : 'text-zinc-700 dark:text-zinc-300'}`}>
                         {problem.title}
-                    </h3>
+                        </h3>
+                    </div>
                     <span className="text-[10px] text-zinc-400 whitespace-nowrap mt-0.5 font-medium">{problem.timeAgo}</span>
                 </div>
                 

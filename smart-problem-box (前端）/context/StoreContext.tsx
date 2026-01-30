@@ -5,7 +5,9 @@ import {
   apiAddFolder,
   apiBootstrap,
   apiDeleteNode,
+  apiDeleteNodesBatch,
   apiDeleteProblem,
+  apiDeleteProblemsBatch,
   apiLogin,
   apiRegister,
   apiToggleFavorite,
@@ -32,7 +34,9 @@ interface StoreContextType {
   setDifficultyFilter: (difficulty: 'all' | 'easy' | 'medium' | 'hard') => void;
   addNewFolder: (title: string) => void;
   deleteNode: (nodeId: string) => void;
+  deleteNodesBatch: (nodeIds: string[]) => void;
   deleteProblem: (problemId: string) => void;
+  deleteProblemsBatch: (problemIds: string[]) => void;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => void;
@@ -222,7 +226,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
   const deleteNode = (nodeId: string) => {
     apiDeleteNode(nodeId)
-      .then(({ deletedIds }) => {
+      .then(({ deletedIds, deletedProblemIds }) => {
         const recursiveDelete = (nodes: TreeNode[]): TreeNode[] => {
           return nodes
             .filter(node => !deletedIds.includes(node.id))
@@ -232,9 +236,64 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
             }));
         };
         setTreeData(prev => recursiveDelete(prev));
+
+        if (deletedProblemIds && deletedProblemIds.length > 0) {
+          setProblems(prev => {
+            const next = { ...prev };
+            deletedProblemIds.forEach(id => {
+              delete next[id];
+            });
+            return next;
+          });
+
+          setState(prev => ({
+            ...prev,
+            favorites: prev.favorites.filter(id => !deletedProblemIds.includes(id)),
+            currentProblemId: prev.currentProblemId && deletedProblemIds.includes(prev.currentProblemId)
+              ? null
+              : prev.currentProblemId
+          }));
+        }
       })
       .catch((error) => {
         console.error('删除节点失败：', error);
+      });
+  };
+
+  const deleteNodesBatch = (nodeIds: string[]) => {
+    if (nodeIds.length === 0) return;
+    apiDeleteNodesBatch(nodeIds)
+      .then(({ deletedIds, deletedProblemIds }) => {
+        const recursiveDelete = (nodes: TreeNode[]): TreeNode[] => {
+          return nodes
+            .filter(node => !deletedIds.includes(node.id))
+            .map(node => ({
+              ...node,
+              children: node.children ? recursiveDelete(node.children) : undefined
+            }));
+        };
+        setTreeData(prev => recursiveDelete(prev));
+
+        if (deletedProblemIds && deletedProblemIds.length > 0) {
+          setProblems(prev => {
+            const next = { ...prev };
+            deletedProblemIds.forEach(id => {
+              delete next[id];
+            });
+            return next;
+          });
+
+          setState(prev => ({
+            ...prev,
+            favorites: prev.favorites.filter(id => !deletedProblemIds.includes(id)),
+            currentProblemId: prev.currentProblemId && deletedProblemIds.includes(prev.currentProblemId)
+              ? null
+              : prev.currentProblemId
+          }));
+        }
+      })
+      .catch((error) => {
+        console.error('批量删除节点失败：', error);
       });
   };
 
@@ -268,6 +327,30 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       });
   };
 
+  const deleteProblemsBatch = (problemIds: string[]) => {
+    if (problemIds.length === 0) return;
+    apiDeleteProblemsBatch(problemIds)
+      .then(() => {
+        setProblems(prev => {
+          const next = { ...prev };
+          problemIds.forEach(id => {
+            delete next[id];
+          });
+          return next;
+        });
+
+        setState(prev => ({
+          ...prev,
+          favorites: prev.favorites.filter(id => !problemIds.includes(id)),
+          currentProblemId: prev.currentProblemId && problemIds.includes(prev.currentProblemId)
+            ? null
+            : prev.currentProblemId
+        }));
+      })
+      .catch((error) => {
+        console.error('批量删除题目失败：', error);
+      });
+  };
   // Auth Methods
   const login = async (email: string, password: string) => {
     const { token, profile } = await apiLogin({ email, password });
@@ -332,7 +415,9 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         setDifficultyFilter,
         addNewFolder,
         deleteNode,
+        deleteNodesBatch,
         deleteProblem,
+        deleteProblemsBatch,
         login,
         register,
         logout,

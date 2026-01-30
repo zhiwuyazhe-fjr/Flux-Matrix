@@ -161,13 +161,13 @@ const SettingsView: React.FC = () => {
                                 onClick={() => !state.darkMode && toggleDarkMode()}
                                 className={`p-2 rounded-md transition-all ${!state.darkMode ? 'bg-white shadow text-zinc-900' : 'text-zinc-500 hover:text-zinc-300'}`}
                             >
-                                <Sun size={18} />
+                                <Moon size={18} />
                             </button>
                             <button 
                                 onClick={() => state.darkMode && toggleDarkMode()}
                                 className={`p-2 rounded-md transition-all ${state.darkMode ? 'bg-zinc-700 shadow text-white' : 'text-zinc-500 hover:text-zinc-700'}`}
                             >
-                                <Moon size={18} />
+                                <Sun size={18} />
                             </button>
                         </div>
                     </div>
@@ -184,7 +184,6 @@ const SettingsView: React.FC = () => {
                         <div className="flex items-center justify-between">
                             <div>
                                 <p className="text-sm font-medium text-zinc-900 dark:text-white">密码</p>
-                                <p className="text-xs text-zinc-500 mt-1">上次修改于 30 天前</p>
                             </div>
                             <button 
                                 onClick={() => setIsChangePasswordOpen(true)}
