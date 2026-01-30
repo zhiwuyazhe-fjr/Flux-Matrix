@@ -11,11 +11,25 @@ interface DirectoryTreeProps {
   selectedNodeIds?: string[];
   onToggleSelect?: (node: TreeNode) => void;
   selectMode?: boolean;
+  dragOverId?: string | null;
+  setDragOverId?: (value: string | null) => void;
 }
 
-const DirectoryTree: React.FC<DirectoryTreeProps> = ({ nodes, level = 0, parentId = null, selectedNodeIds = [], onToggleSelect, selectMode = false }) => {
-  const { state, toggleNodeExpansion, setCurrentProblem, setSelectedFolder, setViewMode, deleteNode } = useStore();
+const DirectoryTree: React.FC<DirectoryTreeProps> = ({
+  nodes,
+  level = 0,
+  parentId = null,
+  selectedNodeIds = [],
+  onToggleSelect,
+  selectMode = false,
+  dragOverId,
+  setDragOverId
+}) => {
+  const { state, treeData, toggleNodeExpansion, setCurrentProblem, setSelectedFolder, setViewMode, deleteNode, moveProblemToFolder, moveNodeToFolder, reorderNodesInParent, setExpandedNodes } = useStore();
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+  const [internalDragOverId, setInternalDragOverId] = useState<string | null>(null);
+  const activeDragOverId = typeof dragOverId === 'undefined' ? internalDragOverId : dragOverId;
+  const setActiveDragOverId = setDragOverId || setInternalDragOverId;
 
   // Close context menu on click elsewhere
   useEffect(() => {
@@ -30,13 +44,36 @@ const DirectoryTree: React.FC<DirectoryTreeProps> = ({ nodes, level = 0, parentI
     setContextMenu({ x: e.clientX, y: e.clientY, nodeId });
   };
 
+  const findNodePath = (items: TreeNode[], targetId: string, path: TreeNode[] = []): TreeNode[] | null => {
+    for (const item of items) {
+      const nextPath = [...path, item];
+      if (item.id === targetId) return nextPath;
+      if (item.children) {
+        const found = findNodePath(item.children, targetId, nextPath);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  const reorderWithinParent = (fromId: string, toId: string) => {
+    if (!fromId || !toId || fromId === toId) return;
+    const ids = nodes.map((n) => n.id);
+    if (!ids.includes(fromId) || !ids.includes(toId)) return;
+    const next = ids.filter((id) => id !== fromId);
+    const targetIndex = next.indexOf(toId);
+    if (targetIndex === -1) return;
+    next.splice(targetIndex, 0, fromId);
+    reorderNodesInParent(parentId || null, next);
+  };
+
   return (
     <div className="flex flex-col select-none">
       {nodes.map((node) => {
         const isExpanded = state.expandedNodes.includes(node.id);
-        const isActiveFile = node.type === 'file' && state.currentProblemId === node.problemId;
         const isActiveFolder = node.type === 'folder' && state.selectedFolderId === node.id;
         const isSelected = selectedNodeIds.includes(node.id);
+        const isDragOver = node.type === 'folder' && activeDragOverId === node.id;
         
         const paddingLeft = 12 + level * 12; // Indentation logic
 
@@ -44,14 +81,53 @@ const DirectoryTree: React.FC<DirectoryTreeProps> = ({ nodes, level = 0, parentI
           <div key={node.id}>
             <div
               onContextMenu={(e) => handleContextMenu(e, node.id)}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData('nodeId', node.id);
+                e.dataTransfer.setData('nodeType', node.type);
+                e.dataTransfer.setData('parentId', parentId || 'root');
+                e.dataTransfer.effectAllowed = 'move';
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (node.type === 'folder') setActiveDragOverId(node.id);
+              }}
+              onDragLeave={() => {
+                if (node.type !== 'folder') return;
+                if (activeDragOverId === node.id) setActiveDragOverId(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setActiveDragOverId(null);
+                const movedNodeId = e.dataTransfer.getData('nodeId');
+                const movedNodeType = e.dataTransfer.getData('nodeType');
+                const problemId = e.dataTransfer.getData('problemId');
+                const dragParentId = e.dataTransfer.getData('parentId') || 'root';
+                const currentParent = parentId || 'root';
+                if (movedNodeId && movedNodeType) {
+                  if (dragParentId === currentParent) {
+                    reorderWithinParent(movedNodeId, node.id);
+                    return;
+                  }
+                  if (node.type === 'folder' && movedNodeId !== node.id) {
+                    moveNodeToFolder(movedNodeId, node.id);
+                  }
+                  return;
+                }
+                if (problemId) {
+                  if (node.type === 'folder') {
+                    moveProblemToFolder(problemId, node.id);
+                  }
+                }
+              }}
               className={`
                 group flex items-center py-1.5 pr-2 cursor-pointer text-sm transition-colors rounded-r-lg mr-2 relative
-                ${isActiveFile 
-                  ? 'bg-primary/10 text-primary font-medium' 
-                  : isActiveFolder
-                    ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium'
-                    : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-800'
+                ${isActiveFolder
+                  ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 font-medium'
+                  : 'text-zinc-800 dark:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-800'
                 }
+                ${isDragOver ? 'ring-1 ring-primary/40 bg-primary/10' : ''}
               `}
               style={{ paddingLeft: `${paddingLeft}px` }}
             >
@@ -80,8 +156,9 @@ const DirectoryTree: React.FC<DirectoryTreeProps> = ({ nodes, level = 0, parentI
                 onClick={() => {
                     if (node.type === 'folder') {
                       setSelectedFolder(node.id);
-                      // Optional: Auto-expand on selection
-                      if (!isExpanded) toggleNodeExpansion(node.id);
+                      const path = findNodePath(treeData, node.id) || [];
+                      const pathIds = path.filter((p) => p.type === 'folder').map((p) => p.id);
+                      setExpandedNodes(pathIds);
                     } else if (node.type === 'file' && node.problemId) {
                       setCurrentProblem(node.problemId);
                       setViewMode('study'); // Switch to study view to see the problem immediately
@@ -144,6 +221,8 @@ const DirectoryTree: React.FC<DirectoryTreeProps> = ({ nodes, level = 0, parentI
                 selectedNodeIds={selectedNodeIds}
                 onToggleSelect={onToggleSelect}
                 selectMode={selectMode}
+                dragOverId={activeDragOverId}
+                setDragOverId={setActiveDragOverId}
               />
             )}
           </div>

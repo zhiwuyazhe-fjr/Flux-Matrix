@@ -1,23 +1,22 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
 
-const TOKEN_KEY = 'spb_access_token';
-
-export const getAccessToken = () => {
-  return localStorage.getItem(TOKEN_KEY);
-};
+const ACCESS_TOKEN_KEY = 'spb_access_token';
 
 export const setAccessToken = (token: string) => {
-  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(ACCESS_TOKEN_KEY, token);
+};
+
+export const getAccessToken = () => {
+  return localStorage.getItem(ACCESS_TOKEN_KEY) || '';
 };
 
 export const clearAccessToken = () => {
-  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(ACCESS_TOKEN_KEY);
 };
 
-const request = async <T>(path: string, options: RequestInit = {}): Promise<T> => {
+const request = async <T>(path: string, options: RequestInit = {}) => {
   const token = getAccessToken();
   const headers = new Headers(options.headers || {});
-
   if (!headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
@@ -30,41 +29,52 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
     headers
   });
 
+  const text = await response.text();
+  let data: any = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+
   if (!response.ok) {
-    let message = '请求失败';
-    try {
-      const data = await response.json();
-      if (data?.message) message = data.message;
-    } catch {
-      // ignore parse error
-    }
+    const message = data?.message || '请求失败';
     throw new Error(message);
   }
 
-  return response.json() as Promise<T>;
+  return data as T;
 };
 
 export const apiLogin = (payload: { email: string; password: string }) => {
-  return request<{ token: string; profile: { name: string; email: string; avatar?: string; plan: 'free' | 'pro' } }>(
-    '/api/auth/login',
-    { method: 'POST', body: JSON.stringify(payload) }
-  );
+  return request<{ token: string; profile: any }>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
 };
 
 export const apiRegister = (payload: { name: string; email: string; password: string }) => {
-  return request<{ token: string; profile: { name: string; email: string; avatar?: string; plan: 'free' | 'pro' } }>(
-    '/api/auth/register',
-    { method: 'POST', body: JSON.stringify(payload) }
-  );
+  return request<{ token: string; profile: any }>('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+};
+
+export const apiChangePassword = (payload: { currentPassword: string; newPassword: string }) => {
+  return request<{ ok: boolean }>('/api/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
 };
 
 export const apiBootstrap = () => {
-  return request<{
-    profile: { name: string; email: string; avatar?: string; plan: 'free' | 'pro' };
-    problems: Array<{ id: string; title: string; subject: string; difficulty: 'easy' | 'medium' | 'hard'; timeAgo: string; tags: string[]; description?: string }>;
-    tree: Array<{ id: string; title: string; type: 'folder' | 'file'; problemId?: string; children?: any[] }>;
-    favorites: string[];
-  }>('/api/bootstrap');
+  return request<{ profile: any; problems: any[]; tree: any[]; favorites: string[] }>('/api/bootstrap');
+};
+
+export const apiUpdateProfile = (payload: any) => {
+  return request<{ profile: any }>('/api/profile', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
 };
 
 export const apiToggleFavorite = (problemId: string) => {
@@ -75,86 +85,90 @@ export const apiToggleFavorite = (problemId: string) => {
 };
 
 export const apiAddFolder = (payload: { title: string; parentId?: string | null }) => {
-  return request<{ node: { id: string; title: string; type: 'folder'; children: any[] } }>('/api/folders', {
+  return request<{ node: any }>('/api/folders', {
     method: 'POST',
     body: JSON.stringify(payload)
   });
 };
 
 export const apiDeleteNode = (nodeId: string) => {
-  return request<{ deletedIds: string[]; deletedProblemIds: string[] }>(`/api/nodes/${nodeId}`, { method: 'DELETE' });
+  return request<{ ok: boolean }>(`/api/nodes/${nodeId}`, { method: 'DELETE' });
 };
 
 export const apiDeleteNodesBatch = (nodeIds: string[]) => {
-  return request<{ deletedIds: string[]; deletedProblemIds: string[] }>('/api/nodes/batch-delete', {
+  return request<{ ok: boolean }>('/api/nodes/batch-delete', {
     method: 'POST',
     body: JSON.stringify({ nodeIds })
   });
 };
 
+export const apiRestoreNode = (payload: { nodeId: string }) => {
+  return request<{ ok: boolean }>('/api/nodes/restore', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+};
+
+export const apiHardDeleteNode = (payload: { nodeId: string }) => {
+  return request<{ ok: boolean }>('/api/nodes/hard-delete', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+};
+
+export const apiMoveProblemToFolder = (payload: { problemId: string; targetFolderId?: string | null }) => {
+  return request<{ ok: boolean }>('/api/nodes/move-problem', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+};
+
+export const apiMoveNodeToFolder = (payload: { nodeId: string; targetFolderId?: string | null }) => {
+  return request<{ ok: boolean }>('/api/nodes/move-node', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+};
+
+export const apiReorderNodes = (payload: { orderedIds: string[] }) => {
+  return request<{ ok: boolean }>('/api/nodes/reorder', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+};
+
 export const apiDeleteProblem = (problemId: string) => {
-  return request<{ deletedId: string }>(`/api/problems/${problemId}`, { method: 'DELETE' });
+  return request<{ ok: boolean }>(`/api/problems/${problemId}`, { method: 'DELETE' });
 };
 
 export const apiDeleteProblemsBatch = (problemIds: string[]) => {
-  return request<{ deletedProblemIds: string[] }>('/api/problems/batch-delete', {
+  return request<{ ok: boolean }>('/api/problems/batch-delete', {
     method: 'POST',
     body: JSON.stringify({ problemIds })
   });
 };
 
-export const apiUpdateProfile = (payload: { name?: string; email?: string; avatar?: string; plan?: 'free' | 'pro' }) => {
-  return request<{ profile: { name: string; email: string; avatar?: string; plan: 'free' | 'pro' } }>('/api/profile', {
+export const apiAnalyzeImport = (payload: { dataUrl: string }) => {
+  return request<{ imageUrl: string; candidates: Array<{ content: string }> }>('/api/import/analyze', {
     method: 'POST',
     body: JSON.stringify(payload)
   });
-};
-
-export const apiChangePassword = (payload: { currentPassword: string; newPassword: string }) => {
-  return request<{ success: boolean }>('/api/auth/password', {
-    method: 'POST',
-    body: JSON.stringify(payload)
-  });
-};
-
-export const apiUploadAvatar = (payload: { dataUrl: string }) => {
-  return request<{ avatarUrl: string; profile: { name: string; email: string; avatar?: string; plan: 'free' | 'pro' } }>(
-    '/api/avatar',
-    {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    }
-  );
-};
-
-export const apiImportQuestion = (payload: { dataUrl: string }) => {
-  return request<{ question: { id: string; image_url: string; summary: string; status: string; created_at: string } }>(
-    '/api/import-question',
-    {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    }
-  );
 };
 
 export const apiFetchQuestions = () => {
-  return request<{ questions: Array<{ id: string; image_url: string; summary?: string; content?: string; status: string; created_at: string }> }>(
-    '/api/questions'
-  );
+  return request<{ questions: any[] }>('/api/questions');
 };
 
-export const apiAnalyzeImport = (payload: { dataUrl: string }) => {
-  return request<{ imageUrl: string; candidates: Array<{ content: string }> }>(
-    '/api/import-questions/analyze',
-    {
-      method: 'POST',
-      body: JSON.stringify(payload)
-    }
-  );
-};
-
-export const apiSaveQuestions = (payload: { imageUrl: string; items: Array<{ content: string }>; parentFolderId?: string | null }) => {
-  return request<{ questions: Array<{ id: string; image_url: string; content: string; status: string; created_at: string }> }>(
+export const apiSaveQuestions = (payload: {
+  imageUrl: string;
+  items: Array<{ content: string; title?: string; tags?: string[]; difficulty?: string }>;
+  parentFolderId?: string | null;
+  subject?: string;
+  tags?: { big: string; mid: string; small: string } | string[];
+  forceParentOnly?: boolean;
+  classifyModel?: string;
+}) => {
+  return request<{ ok: boolean; problems?: any[] }>(
     '/api/questions/batch',
     {
       method: 'POST',
@@ -163,8 +177,65 @@ export const apiSaveQuestions = (payload: { imageUrl: string; items: Array<{ con
   );
 };
 
-export const apiAnalyzeQuestionText = (payload: { questionText: string }) => {
-  return request<{ result: any }>('/api/analyze-question', {
+export const apiAnalyzeQuestionText = (payload: { questionText: string; subject?: string; problemId?: string; model?: string }) => {
+  return request<{ result: any }>('/api/analysis', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+};
+
+export const apiChat = (payload: { message: string; model?: string; context?: string; history?: Array<{ role: 'user' | 'ai'; content: string }>; problemId?: string }) => {
+  return request<{ reply: { role: string; content: string } }>('/api/chat', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+};
+
+export const apiFetchChatHistory = (payload: { problemId: string }) => {
+  const params = new URLSearchParams(payload);
+  return request<{ messages: Array<{ role: 'user' | 'ai'; content: string; model?: string; createdAt?: string }> }>(
+    `/api/chat/history?${params.toString()}`
+  );
+};
+
+export const apiGenerateSimilarProblem = (payload: { originalText: string; analysisContext?: any; model?: string; problemId: string }) => {
+  return request<{ question: string; id: string; model: string; createdAt: string; payload: any }>('/api/practice/generate-v2', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+};
+
+export const apiFetchLatestPractice = (payload: { problemId: string }) => {
+  const params = new URLSearchParams(payload);
+  return request<{ item: { id: string; question: string; model?: string; createdAt: string } | null }>(`/api/practice/latest?${params.toString()}`);
+};
+
+export const apiFetchPracticeList = (payload: { problemId: string }) => {
+  const params = new URLSearchParams(payload);
+  return request<{ items: Array<{ id: string; question: string; model?: string; createdAt: string }> }>(`/api/practice/list?${params.toString()}`);
+};
+
+export const apiCheckPractice = (payload: { questionText: string; userAnswer: string; model?: string; practiceId: string }) => {
+  return request<{ feedback: { verdict: 'correct' | 'partial' | 'incorrect'; score: number; summary: string; strengths: string[]; improvements: string[]; next_steps: string[]; correct_answer: string; solution_steps: string } }>(
+    '/api/practice/check',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }
+  );
+};
+
+export const apiFetchPracticeFeedback = (payload: { problemId?: string; practiceId?: string }) => {
+  const params = new URLSearchParams();
+  if (payload.problemId) params.set('problemId', payload.problemId);
+  if (payload.practiceId) params.set('practiceId', payload.practiceId);
+  return request<{ item: { id: string; question: string; user_answer: string; feedback: any; model?: string; created_at: string; checked_at?: string } | null }>(
+    `/api/practice/feedback?${params.toString()}`
+  );
+};
+
+export const apiSubmitAndGradeAnswer = (payload: { userAnswer: string; correctAnswerContext?: string | null; practiceId: string; model?: string }) => {
+  return request<{ result: any }>('/api/practice/grade-v2', {
     method: 'POST',
     body: JSON.stringify(payload)
   });

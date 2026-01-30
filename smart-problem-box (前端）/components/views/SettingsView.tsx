@@ -1,7 +1,7 @@
 
 import React, { useState, useRef } from 'react';
 import { useStore } from '../../context/StoreContext';
-import { User, Mail, Lock, Moon, Sun, Monitor, Save, PanelLeft, Camera, Check, X } from 'lucide-react';
+import { User, Mail, Lock, Moon, Sun, Monitor, Save, PanelLeft, Camera, Check, X, HelpCircle } from 'lucide-react';
 import { apiChangePassword } from '../../api';
 
 const SettingsView: React.FC = () => {
@@ -243,7 +243,7 @@ const SettingsView: React.FC = () => {
                                 <div className="flex items-center gap-3 pt-2">
                                     <button 
                                         type="submit"
-                                        className="px-4 py-2 bg-primary text-white text-sm font-medium rounded-lg hover:bg-blue-600 transition-colors"
+                                        className="px-4 py-2 bg-primary text-white text-sm font-medium rounded-lg hover:bg-primary/90 transition-colors"
                                     >
                                         确认修改
                                     </button>
@@ -260,6 +260,23 @@ const SettingsView: React.FC = () => {
                     )}
                 </section>
 
+                {/* Help Center Section */}
+                <section className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 p-6 shadow-sm">
+                    <h2 className="text-base font-semibold text-zinc-900 dark:text-white mb-4 flex items-center gap-2">
+                        <HelpCircle size={18} className="text-primary" />
+                        帮助中心
+                    </h2>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-4">
+                        了解 Flux Matrix 的产品哲学与操作协议，快速上手并掌握全部功能。
+                    </p>
+                    <button
+                        onClick={() => setViewMode('help')}
+                        className="px-4 py-2 rounded-lg text-sm font-medium bg-primary text-white hover:bg-primary/90 transition-colors"
+                    >
+                        进入帮助中心
+                    </button>
+                </section>
+
                 <div className="flex justify-end gap-4">
                     <button 
                         onClick={() => setViewMode('study')}
@@ -269,7 +286,7 @@ const SettingsView: React.FC = () => {
                     </button>
                     <button 
                         onClick={handleSave}
-                        className={`px-6 py-2 rounded-lg text-sm font-medium text-white transition-all flex items-center gap-2 ${isSaved ? 'bg-emerald-500' : 'bg-primary hover:bg-blue-600'}`}
+                        className={`px-6 py-2 rounded-lg text-sm font-medium text-white transition-all flex items-center gap-2 ${isSaved ? 'bg-emerald-500' : 'bg-primary hover:bg-primary/90'}`}
                     >
                         {isSaved ? <span className="flex items-center gap-1">已保存</span> : <span className="flex items-center gap-1"><Save size={16}/> 保存更改</span>}
                     </button>

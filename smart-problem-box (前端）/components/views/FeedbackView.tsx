@@ -1,28 +1,128 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../context/StoreContext';
 import { Problem } from '../../types';
-import { Check, Lightbulb, RotateCcw, BookOpen, ArrowRight, ChevronRight } from 'lucide-react';
-import { InlineMath } from 'react-katex';
+import { Check, RotateCcw, ArrowRight, ArrowLeft, XCircle, ChevronRight } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
+import { apiFetchPracticeFeedback, apiFetchPracticeList, apiSaveQuestions } from '../../api';
 
 interface FeedbackViewProps {
   problem: Problem;
 }
 
 const FeedbackView: React.FC<FeedbackViewProps> = ({ problem }) => {
-  const { setViewMode } = useStore();
+  const { setViewMode, treeData, setCurrentProblem, refreshData } = useStore();
+  const [feedbackPayload, setFeedbackPayload] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [isSavingToLibrary, setIsSavingToLibrary] = useState(false);
+  const findParentFolderId = (nodes: any[], problemId: string, parentId: string | null = null): string | null => {
+    for (const node of nodes) {
+      if (node.type === 'file' && node.problemId === problemId) {
+        return parentId;
+      }
+      if (node.children) {
+        const found = findParentFolderId(node.children, problemId, node.type === 'folder' ? node.id : parentId);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  const handleSaveToLibrary = async () => {
+    if (!feedbackPayload?.question) return;
+    setIsSavingToLibrary(true);
+    try {
+      const { items } = await apiFetchPracticeList({ problemId: problem.id });
+      const seq = Math.max(1, (items || []).length);
+      const title = `${problem.title}-同类题${seq}`;
+      const parentFolderId = findParentFolderId(treeData || [], problem.id, null);
+      const { problems } = await apiSaveQuestions({
+        imageUrl: '',
+        items: [{ content: feedbackPayload.question, title }],
+        subject: problem.subject,
+        parentFolderId,
+        forceParentOnly: true
+      });
+      await refreshData();
+      const newProblemId = problems && problems[0]?.id;
+      if (newProblemId) {
+        setCurrentProblem(newProblemId);
+        setViewMode('study');
+      }
+      alert('已保存到题库');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '保存失败，请稍后再试';
+      alert(message);
+    } finally {
+      setIsSavingToLibrary(false);
+    }
+  };
+  const normalizeMarkdown = (value: string) => {
+    if (!value) return '';
+    return value
+      .replace(/\\\[/g, '$$')
+      .replace(/\\\]/g, '$$')
+      .replace(/\\\(/g, '$')
+      .replace(/\\\)/g, '$')
+      .replace(/\r\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/([^\n])\n(?!\n)/g, '$1  \n');
+  };
+  useEffect(() => {
+    let isMounted = true;
+    const loadFeedback = async () => {
+      setIsLoading(true);
+      setLoadError('');
+      try {
+        const activeId = localStorage.getItem(`spb_practice_active_${problem.id}`) || '';
+        const { item } = await apiFetchPracticeFeedback(activeId ? { practiceId: activeId } : { problemId: problem.id });
+        if (!isMounted) return;
+        setFeedbackPayload(item || null);
+      } catch (error) {
+        if (!isMounted) return;
+        const message = error instanceof Error ? error.message : '加载失败';
+        setLoadError(message);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    };
+    loadFeedback();
+    return () => {
+      isMounted = false;
+    };
+  }, [problem.id]);
+
+  const feedback = feedbackPayload?.feedback;
+  const isCorrect = typeof feedback?.is_correct === 'boolean' ? feedback.is_correct : null;
+  const verdict = isCorrect === true ? 'correct' : isCorrect === false ? 'incorrect' : 'partial';
+  const verdictLabel = verdict === 'correct' ? '解答正确' : verdict === 'incorrect' ? '解答有误' : '部分正确';
+  const verdictTone =
+    verdict === 'correct'
+      ? 'bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-500/20 text-emerald-900 dark:text-emerald-400'
+      : verdict === 'incorrect'
+        ? 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/20 text-red-900 dark:text-red-400'
+        : 'bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20 text-amber-900 dark:text-amber-400';
 
   return (
     <div className="max-w-3xl mx-auto px-8 py-8 flex flex-col gap-6 pb-20 animate-fade-in">
-        {/* Success Banner */}
-        <div className="rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 p-4 flex items-start gap-3 shadow-sm">
-            <div className="mt-0.5 h-5 w-5 rounded-full bg-emerald-500 flex items-center justify-center flex-none text-white">
-                <Check size={14} strokeWidth={3} />
+        {/* Result Header */}
+        <div className={`rounded-xl p-4 flex items-start gap-3 shadow-sm border ${verdictTone}`}>
+            <div className={`mt-0.5 h-5 w-5 rounded-full flex items-center justify-center flex-none text-white ${
+                verdict === 'correct' ? 'bg-emerald-500' : verdict === 'incorrect' ? 'bg-red-500' : 'bg-amber-500'
+            }`}>
+                {verdict === 'incorrect' ? <XCircle size={14} strokeWidth={2} /> : <Check size={14} strokeWidth={3} />}
             </div>
             <div>
-                <h3 className="text-sm font-bold text-emerald-900 dark:text-emerald-400">解答正确</h3>
-                <p className="text-sm text-emerald-700 dark:text-emerald-500 mt-1 leading-relaxed">
-                    恭喜！你的解题逻辑非常清晰，特别是在特征向量的求解步骤上十分严谨。
+                <h3 className="text-sm font-bold">{verdictLabel}</h3>
+                <p className="text-sm mt-1 leading-relaxed">
+                    {isLoading ? '加载中...' : loadError ? loadError : (feedback?.summary || '已完成批改。')}
                 </p>
+                {verdict === 'correct' && (
+                    <p className="text-xs mt-2 text-emerald-700 dark:text-emerald-500">做得很好，保持这个节奏！</p>
+                )}
             </div>
         </div>
 
@@ -30,23 +130,10 @@ const FeedbackView: React.FC<FeedbackViewProps> = ({ problem }) => {
         <section>
             <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-3 pl-1">题目内容</h4>
             <div className="bg-white dark:bg-[#1c1c21] border border-zinc-200 dark:border-zinc-800 rounded-xl p-6 shadow-sm">
-                <p className="text-zinc-900 dark:text-white text-base leading-relaxed font-serif">
-                    求矩阵 <span className="font-mono bg-zinc-100 dark:bg-zinc-800 px-1 rounded">A</span> 的特征值，其中：
-                </p>
-                <div className="my-6 flex justify-center">
-                    <div className="flex items-center gap-3 font-serif text-xl text-zinc-900 dark:text-white">
-                        <span className="italic font-bold">A</span>
-                        <span>=</span>
-                        <div className="relative px-3 py-1">
-                             {/* Custom Matrix Visualization (Simple HTML/Tailwind) */}
-                            <div className="absolute left-0 top-0 bottom-0 w-2 border-l-2 border-t-2 border-b-2 border-zinc-800 dark:border-zinc-200 rounded-l-sm"></div>
-                            <div className="absolute right-0 top-0 bottom-0 w-2 border-r-2 border-t-2 border-b-2 border-zinc-800 dark:border-zinc-200 rounded-r-sm"></div>
-                            <div className="grid grid-cols-2 gap-x-8 gap-y-4 text-center font-mono font-medium">
-                                <div>4</div><div>1</div>
-                                <div>2</div><div>3</div>
-                            </div>
-                        </div>
-                    </div>
+                <div className="prose prose-sm dark:prose-invert max-w-none leading-relaxed">
+                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                        {normalizeMarkdown(feedbackPayload?.question || '')}
+                    </ReactMarkdown>
                 </div>
             </div>
         </section>
@@ -55,87 +142,95 @@ const FeedbackView: React.FC<FeedbackViewProps> = ({ problem }) => {
         <section>
             <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-3 pl-1">你的解题思路</h4>
             <div className="bg-white dark:bg-[#1c1c21] border border-zinc-200 dark:border-zinc-800 rounded-xl p-6 shadow-sm relative overflow-hidden group">
-                <div className="absolute top-4 right-4 flex items-center gap-2">
-                    <span className="text-[10px] font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-500 px-2 py-1 rounded border border-zinc-200 dark:border-zinc-700">耗时 2分15秒</span>
-                </div>
-                <div className="font-mono text-sm text-zinc-600 dark:text-zinc-300 space-y-3 font-medium">
-                    <div className="flex gap-2">
-                        <span className="text-zinc-400 select-none">01</span>
-                        <p>计算特征方程 <InlineMath math="|A - \lambda I| = 0" /></p>
-                    </div>
-                    <div className="flex gap-2">
-                        <span className="text-zinc-400 select-none">02</span>
-                        <p className="pl-4 text-zinc-800 dark:text-zinc-200"><InlineMath math="(4-\lambda)(3-\lambda) - 2 = 0" /></p>
-                    </div>
-                    <div className="flex gap-2">
-                        <span className="text-zinc-400 select-none">03</span>
-                        <p>化简方程: <InlineMath math="\lambda^2 - 7\lambda + 12 - 2 = 0 \Rightarrow \lambda^2 - 7\lambda + 10 = 0" /></p>
-                    </div>
-                    <div className="flex gap-2">
-                        <span className="text-zinc-400 select-none">04</span>
-                        <p>因式分解: <InlineMath math="(\lambda-2)(\lambda-5) = 0" /></p>
-                    </div>
-                    <div className="flex gap-2">
-                        <span className="text-zinc-400 select-none">05</span>
-                        <p className="text-primary font-bold">∴ <InlineMath math="\lambda_1 = 2, \lambda_2 = 5" /></p>
-                    </div>
+                <div className="prose prose-sm dark:prose-invert max-w-none leading-relaxed">
+                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                        {normalizeMarkdown(feedbackPayload?.user_answer || '')}
+                    </ReactMarkdown>
                 </div>
             </div>
         </section>
 
-        {/* AI Suggestions */}
-        <section>
-            <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-3 pl-1">AI 批改建议</h4>
-            <div className="flex flex-col gap-3">
-                <div className="bg-white dark:bg-[#1c1c21] border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 flex items-start gap-4 transition-all hover:border-emerald-200 dark:hover:border-emerald-500/30">
-                    <div className="mt-1 h-6 w-6 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center flex-none">
-                        <Check size={16} />
+        {feedback?.standard_solution?.final_answer_latex && (
+            <section>
+                <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-3 pl-1">正确解答</h4>
+                <div className="bg-white dark:bg-[#1c1c21] border border-primary/30 dark:border-primary/40 rounded-xl p-6 shadow-sm">
+                    <div className="flex items-center gap-2 mb-3">
+                        <span className="text-[10px] font-semibold text-primary bg-primary/10 px-2 py-0.5 rounded-full border border-primary/20">标准答案</span>
                     </div>
-                    <div className="flex-1">
-                        <h5 className="text-sm font-semibold text-zinc-900 dark:text-white">特征值计算准确</h5>
-                        <p className="text-xs text-zinc-500 mt-1 leading-relaxed">最终结果 λ=2 和 λ=5 与标准答案完全一致，计算过程无误。</p>
-                    </div>
-                </div>
-                 <div className="bg-white dark:bg-[#1c1c21] border border-zinc-200 dark:border-zinc-800 rounded-xl p-4 flex items-start gap-4 transition-all hover:border-emerald-200 dark:hover:border-emerald-500/30">
-                    <div className="mt-1 h-6 w-6 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center flex-none">
-                        <Check size={16} />
-                    </div>
-                    <div className="flex-1">
-                        <h5 className="text-sm font-semibold text-zinc-900 dark:text-white">正交化步骤清晰</h5>
-                        <p className="text-xs text-zinc-500 mt-1 leading-relaxed">你正确识别了矩阵的对称性，并在后续思考中考虑了正交性。</p>
+                    <div className="prose prose-sm dark:prose-invert max-w-none leading-relaxed">
+                        <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                            {normalizeMarkdown(feedback.standard_solution.final_answer_latex)}
+                        </ReactMarkdown>
                     </div>
                 </div>
-                 <div className="bg-blue-50/50 dark:bg-blue-500/5 border border-blue-100 dark:border-blue-500/10 rounded-xl p-4 flex items-start gap-4 group cursor-pointer">
-                    <div className="mt-1 h-6 w-6 rounded-full bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center flex-none">
-                        <Lightbulb size={16} />
+            </section>
+        )}
+
+        {Array.isArray(feedback?.standard_solution?.steps) && feedback.standard_solution.steps.length > 0 && (
+            <section>
+                <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-3 pl-1">解题思路</h4>
+                <div className="bg-white dark:bg-[#1c1c21] border border-zinc-200 dark:border-zinc-800 rounded-xl p-6 shadow-sm">
+                    <div className="space-y-3">
+                        {feedback.standard_solution.steps.map((step: any) => (
+                            <details key={step.seq} className="group rounded-lg border border-zinc-200 dark:border-zinc-800 p-4 open:bg-zinc-50/60 dark:open:bg-zinc-800/40">
+                                <summary className="flex items-center justify-between cursor-pointer text-sm font-semibold text-zinc-900 dark:text-white">
+                                    <div className="flex items-center gap-3">
+                                        <span className="inline-flex items-center justify-center h-6 w-6 rounded-full bg-primary/10 text-primary text-xs font-bold">
+                                            {step.seq}
+                                        </span>
+                                        <span>步骤 {step.seq}</span>
+                                    </div>
+                                    <ChevronRight className="text-zinc-400 group-open:rotate-90 transition-transform" size={16} />
+                                </summary>
+                                <div className="mt-3 prose prose-sm dark:prose-invert max-w-none leading-relaxed">
+                                    <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                        {normalizeMarkdown(step.content)}
+                                    </ReactMarkdown>
+                                </div>
+                            </details>
+                        ))}
                     </div>
-                    <div className="flex-1">
-                        <h5 className="text-sm font-semibold text-zinc-900 dark:text-white">拓展思考</h5>
-                        <p className="text-xs text-zinc-500 mt-1 leading-relaxed">
-                            对于此类实对称矩阵，特征向量之间有什么特殊的几何关系？建议复习一下<span className="text-primary hover:underline ml-1">谱定理</span>相关内容。
-                        </p>
-                    </div>
-                    <ChevronRight className="text-zinc-400 self-center group-hover:text-primary transition-colors" size={20} />
                 </div>
-            </div>
-        </section>
+            </section>
+        )}
 
         {/* Footer Actions */}
         <div className="mt-4 pt-4 border-t border-zinc-100 dark:border-zinc-800/50 flex flex-col sm:flex-row items-center gap-4">
              <button 
-                onClick={() => setViewMode('practice')}
-                className="w-full sm:w-auto flex-1 h-10 border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2"
+                onClick={() => {
+                    localStorage.setItem(`spb_practice_retry_${problem.id}`, '1');
+                    setViewMode('practice');
+                }}
+                className="w-full sm:flex-1 h-10 border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2"
              >
                 <RotateCcw size={18} />
                 再试一次
             </button>
-             <button className="w-full sm:w-auto flex-1 h-10 border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2">
-                <BookOpen size={18} />
-                查看详细讲解
+            <button
+                onClick={handleSaveToLibrary}
+                disabled={isSavingToLibrary}
+                className="w-full sm:flex-1 h-10 border border-primary/40 hover:bg-primary/10 text-primary rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+                {isSavingToLibrary ? '保存中...' : '增添到题库'}
             </button>
-            <button className="w-full sm:w-[40%] h-10 bg-primary hover:bg-blue-600 text-white rounded-lg font-medium text-sm transition-all shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2">
+            <button
+                onClick={() => {
+                    localStorage.setItem(`spb_practice_regenerate_${problem.id}`, '1');
+                    setViewMode('practice');
+                }}
+                className="w-full sm:flex-1 h-10 bg-primary hover:bg-primary/90 text-white rounded-lg font-medium text-sm transition-all shadow-lg shadow-primary/20 flex items-center justify-center gap-2"
+            >
                 <span>下一道同类题</span>
                 <ArrowRight size={18} />
+            </button>
+        </div>
+        <div className="flex items-center justify-center">
+            <button
+                onClick={() => setViewMode('study')}
+                className="text-xs text-zinc-500 hover:text-primary transition-colors flex items-center gap-1.5"
+            >
+                <ArrowLeft size={14} />
+                返回原题
             </button>
         </div>
     </div>

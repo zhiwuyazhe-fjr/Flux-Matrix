@@ -4,7 +4,7 @@ import { useStore } from '../../context/StoreContext';
 import { Search, Filter, FolderOpen, PanelLeft, Check, Trash2, ListChecks, X } from 'lucide-react';
 
 const ProblemList: React.FC = () => {
-  const { filteredProblems, state, setCurrentProblem, toggleSidebar, setDifficultyFilter, deleteProblem, deleteProblemsBatch } = useStore();
+  const { filteredProblems, state, treeData, setCurrentProblem, setViewMode, toggleSidebar, setDifficultyFilter, deleteProblem, deleteProblemsBatch, reorderNodesInParent } = useStore();
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const filterRef = useRef<HTMLDivElement>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -21,9 +21,8 @@ const ProblemList: React.FC = () => {
       }
       setContextMenu(null);
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    // Use click for standard closing interaction, mousedown for immediate response
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
   }, []);
 
   useEffect(() => {
@@ -63,6 +62,33 @@ const ProblemList: React.FC = () => {
     setContextMenu({ x: e.clientX, y: e.clientY, problemId });
   };
 
+  const findFolderNode = (nodes: any[], id: string): any | null => {
+    for (const node of nodes) {
+      if (node.id === id) return node;
+      if (node.children) {
+        const found = findFolderNode(node.children, id);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  const reorderProblemWithinFolder = (fromProblemId: string, toProblemId: string) => {
+    if (!state.selectedFolderId) return;
+    const folderNode = findFolderNode(treeData, state.selectedFolderId);
+    if (!folderNode || !folderNode.children) return;
+    const fileNodes = folderNode.children.filter((n: any) => n.type === 'file' && n.problemId);
+    const fromNode = fileNodes.find((n: any) => n.problemId === fromProblemId);
+    const toNode = fileNodes.find((n: any) => n.problemId === toProblemId);
+    if (!fromNode || !toNode) return;
+    const ids = fileNodes.map((n: any) => n.id);
+    const next = ids.filter((id: string) => id !== fromNode.id);
+    const targetIndex = next.indexOf(toNode.id);
+    if (targetIndex === -1) return;
+    next.splice(targetIndex, 0, fromNode.id);
+    reorderNodesInParent(state.selectedFolderId, next);
+  };
+
   const difficultyOptions: { value: 'all' | 'easy' | 'medium' | 'hard', label: string, color: string }[] = [
       { value: 'all', label: '全部', color: 'text-zinc-900 dark:text-white' },
       { value: 'easy', label: '简单', color: 'text-green-600 dark:text-green-400' },
@@ -72,11 +98,11 @@ const ProblemList: React.FC = () => {
   
   return (
     <div 
-        className="flex-none bg-zinc-50/50 dark:bg-black border-r border-zinc-200 dark:border-zinc-800 flex flex-col relative z-10 h-screen transition-all"
+        className="flex-none flux-panel border-r flux-divider flex flex-col relative z-10 h-screen transition-all"
         style={{ width: state.middleColumnWidth }}
     >
       {/* Search Header */}
-      <div className="h-16 flex-none flex items-center px-4 border-b border-zinc-200 dark:border-zinc-800 gap-2 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-sm sticky top-0 z-20">
+      <div className="h-16 flex-none flex items-center px-4 border-b flux-divider gap-2 flux-panel sticky top-0 z-20">
         <button 
             onClick={toggleSidebar}
             className="p-2 -ml-2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 rounded-lg transition-colors flex-none"
@@ -184,8 +210,29 @@ const ProblemList: React.FC = () => {
             return (
                 <div
                 key={problem.id}
-                onClick={() => setCurrentProblem(problem.id)}
+                onClick={() => {
+                  setCurrentProblem(problem.id);
+                  if (state.currentView !== 'study') {
+                    setViewMode('study');
+                  }
+                }}
                 onContextMenu={(e) => handleContextMenu(e, problem.id)}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData('problemId', problem.id);
+                  e.dataTransfer.effectAllowed = 'move';
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const draggedProblemId = e.dataTransfer.getData('problemId');
+                  if (draggedProblemId && draggedProblemId !== problem.id) {
+                    reorderProblemWithinFolder(draggedProblemId, problem.id);
+                  }
+                }}
                 className={`
                     group flex flex-col gap-2.5 p-4 rounded-xl border cursor-pointer relative transition-all duration-200
                     ${isActive 

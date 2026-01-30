@@ -1,14 +1,20 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
+import { preprocessLaTeX } from '../../utils/latex';
 import { useStore } from '../../context/StoreContext';
 import { TreeNode } from '../../types';
-import { apiAnalyzeImport, apiFetchQuestions, apiSaveQuestions } from '../../api';
+import { apiAnalyzeImport, apiSaveQuestions } from '../../api';
+import { AIFullScreenLoader, AIInlineLoader } from '../ui/AiLoaders';
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf';
+import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker?url';
 import { 
     CloudUpload, 
     ChevronDown, 
     Sparkles, 
-    Minus, 
-    Plus, 
     Image as ImageIcon, 
     X, 
     Check,
@@ -21,29 +27,21 @@ import {
     ListChecks
 } from 'lucide-react';
 
-type ImportedQuestion = {
-    id: string;
-    image_url: string;
-    summary?: string;
-    content?: string;
-    status: string;
-    created_at: string;
-};
-
 const ImportWorkbench: React.FC = () => {
-    const { treeData, setViewMode, toggleSidebar, state, setColumnWidth, addNewFolder } = useStore();
-    const [zoom, setZoom] = useState(100);
+    const { treeData, setViewMode, toggleSidebar, state, setColumnWidth, addNewFolder, refreshData } = useStore();
     const [isResizing, setIsResizing] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadError, setUploadError] = useState('');
-    const [questions, setQuestions] = useState<ImportedQuestion[]>([]);
-    const [isLoadingQuestions, setIsLoadingQuestions] = useState(false);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [candidates, setCandidates] = useState<Array<{ content: string }>>([]);
     const [analysisImageUrl, setAnalysisImageUrl] = useState<string>('');
     const [isSaving, setIsSaving] = useState(false);
+    const [hasClickedImport, setHasClickedImport] = useState(false);
     const [selectedCandidateIndexes, setSelectedCandidateIndexes] = useState<number[]>([]);
     const [isCandidateSelectMode, setIsCandidateSelectMode] = useState(false);
+    const [classifyModel, setClassifyModel] = useState('openai/gpt-4o');
+    const [hasSelectedFolder, setHasSelectedFolder] = useState(false);
+    const [pdfProgressText, setPdfProgressText] = useState('');
     
     // Custom Dropdown State
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -53,6 +51,29 @@ const ImportWorkbench: React.FC = () => {
     const [newFolderTitle, setNewFolderTitle] = useState('');
     const dropdownRef = useRef<HTMLDivElement>(null);
     const uploadInputRef = useRef<HTMLInputElement>(null);
+
+    GlobalWorkerOptions.workerSrc = pdfWorker;
+    const hasUnsavedCandidates = candidates.length > 0;
+
+
+    const pdfToDataUrls = async (file: File) => {
+        const buffer = await file.arrayBuffer();
+        const pdf = await getDocument({ data: buffer }).promise;
+        const urls: string[] = [];
+        for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+            setPdfProgressText(`第 ${pageNumber} 页识别中...`);
+            const page = await pdf.getPage(pageNumber);
+            const viewport = page.getViewport({ scale: 2 });
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            if (!context) throw new Error('PDF 渲染失败');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            await page.render({ canvasContext: context, viewport }).promise;
+            urls.push(canvas.toDataURL('image/png'));
+        }
+        return urls;
+    };
 
     // Close dropdown on outside click
     useEffect(() => {
@@ -66,20 +87,15 @@ const ImportWorkbench: React.FC = () => {
         return () => document.removeEventListener('mousedown', handleClickOutside);
     }, []);
 
-    const fetchQuestions = useCallback(async () => {
-        setIsLoadingQuestions(true);
-        try {
-            const { questions } = await apiFetchQuestions();
-            setQuestions(questions);
-        } catch (error) {
-            console.error('获取题目失败：', error);
-        }
-        setIsLoadingQuestions(false);
-    }, []);
-
     useEffect(() => {
-        fetchQuestions();
-    }, [fetchQuestions]);
+        if (!hasUnsavedCandidates) return;
+        const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+            event.preventDefault();
+            event.returnValue = '';
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }, [hasUnsavedCandidates]);
 
     const startResizing = useCallback((e: React.MouseEvent) => {
         e.preventDefault();
@@ -118,6 +134,25 @@ const ImportWorkbench: React.FC = () => {
         };
     }, [isResizing, state.isSidebarOpen, state.sidebarWidth, setColumnWidth]);
 
+    const findNodePath = (nodes: TreeNode[], targetId: string, path: TreeNode[] = []): TreeNode[] | null => {
+        for (const node of nodes) {
+            const nextPath = [...path, node];
+            if (node.id === targetId) return nextPath;
+            if (node.children) {
+                const found = findNodePath(node.children, targetId, nextPath);
+                if (found) return found;
+            }
+        }
+        return null;
+    };
+
+    const getSubjectTitle = (folderId?: string | null) => {
+        if (!folderId) return '未分类';
+        const path = findNodePath(treeData, folderId);
+        if (!path || path.length === 0) return '未分类';
+        return path[0].title || '未分类';
+    };
+
     const handleCreateFolder = (e: React.FormEvent) => {
         e.preventDefault();
         if (newFolderTitle.trim()) {
@@ -127,35 +162,37 @@ const ImportWorkbench: React.FC = () => {
         }
     };
 
-    const handleUpload = async (file: File) => {
-        if (isUploading) return;
-        setIsUploading(true);
-        setUploadError('');
-
-        try {
-            const dataUrl = await new Promise<string>((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onloadend = () => resolve(reader.result as string);
-                reader.onerror = () => reject(new Error('读取图片失败'));
-                reader.readAsDataURL(file);
-            });
-
-            setIsAnalyzing(true);
-            const { imageUrl, candidates: nextCandidates } = await apiAnalyzeImport({ dataUrl });
-            setAnalysisImageUrl(imageUrl);
-            setCandidates(nextCandidates);
+    const handleUploadSingle = async (file: File) => {
+        const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+        if (isPdf) {
+            const dataUrls = await pdfToDataUrls(file);
+            const results = await Promise.all(
+                dataUrls.map((dataUrl, idx) => (
+                    apiAnalyzeImport({ dataUrl }).then((res) => ({ idx, res }))
+                ))
+            );
+            results
+                .sort((a, b) => a.idx - b.idx)
+                .forEach(({ res }) => {
+                    setAnalysisImageUrl(prev => prev || res.imageUrl);
+                    setCandidates(prev => [...prev, ...res.candidates]);
+                });
             setSelectedCandidateIndexes([]);
-        } catch (error) {
-            const message = error instanceof Error ? error.message : '上传失败，请稍后再试';
-            setUploadError(message);
-            alert(message);
-        } finally {
-            setIsUploading(false);
-            setIsAnalyzing(false);
-            if (uploadInputRef.current) {
-                uploadInputRef.current.value = '';
-            }
+            setPdfProgressText('');
+            return;
         }
+
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = () => reject(new Error('读取图片失败'));
+            reader.readAsDataURL(file);
+        });
+
+        const { imageUrl, candidates: nextCandidates } = await apiAnalyzeImport({ dataUrl });
+        setAnalysisImageUrl(prev => prev || imageUrl);
+        setCandidates(prev => [...prev, ...nextCandidates]);
+        setSelectedCandidateIndexes([]);
     };
 
     const handleSaveAll = async () => {
@@ -171,12 +208,24 @@ const ImportWorkbench: React.FC = () => {
                 alert('题目内容不能为空');
                 return;
             }
-            await apiSaveQuestions({ imageUrl: analysisImageUrl, items: cleaned, parentFolderId: targetFolder?.id || null });
+            const folderId = targetFolder?.id || state.selectedFolderId;
+            if (!hasSelectedFolder) {
+                alert('请先选择保存目录');
+                return;
+            }
+            const subjectTitle = getSubjectTitle(folderId);
+            await apiSaveQuestions({
+                imageUrl: analysisImageUrl,
+                items: cleaned,
+                parentFolderId: folderId,
+                subject: subjectTitle,
+                classifyModel
+            });
+            await refreshData();
             setCandidates([]);
             setAnalysisImageUrl('');
             setSelectedCandidateIndexes([]);
             setIsCandidateSelectMode(false);
-            fetchQuestions();
         } catch (error) {
             const message = error instanceof Error ? error.message : '保存失败，请稍后再试';
             alert(message);
@@ -185,9 +234,33 @@ const ImportWorkbench: React.FC = () => {
         }
     };
 
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (file) handleUpload(file);
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
+        setHasClickedImport(true);
+        const fileList = Array.from(files);
+        setIsUploading(true);
+        setUploadError('');
+        setIsAnalyzing(true);
+        setPdfProgressText('');
+        try {
+            for (const file of fileList) {
+                try {
+                    await handleUploadSingle(file);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : '上传失败，请稍后再试';
+                    setUploadError(message);
+                    alert(message);
+                }
+            }
+        } finally {
+            setIsUploading(false);
+            setIsAnalyzing(false);
+            setPdfProgressText('');
+            if (uploadInputRef.current) {
+                uploadInputRef.current.value = '';
+            }
+        }
     };
 
     const toggleCandidateSelect = (index: number) => {
@@ -223,7 +296,7 @@ const ImportWorkbench: React.FC = () => {
     // Recursive rendering for custom dropdown
     const renderFolderOption = (node: TreeNode, level: number = 0) => {
         // Only render folders
-        if (node.type !== 'folder') return null;
+        if (node.type !== 'folder' || node.title === '回收站') return null;
         
         const isExpanded = expandedFolderIds.includes(node.id);
         const hasChildren = node.children && node.children.some(c => c.type === 'folder');
@@ -237,6 +310,7 @@ const ImportWorkbench: React.FC = () => {
                         e.stopPropagation();
                         setTargetFolder({ id: node.id, title: node.title });
                         setIsDropdownOpen(false);
+                        setHasSelectedFolder(true);
                     }}
                  >
                     {/* Toggle Button */}
@@ -289,9 +363,14 @@ const ImportWorkbench: React.FC = () => {
                     {/* Upload Action */}
                     <button
                         type="button"
-                        onClick={() => uploadInputRef.current?.click()}
+                        onClick={() => {
+                            setHasClickedImport(true);
+                            uploadInputRef.current?.click();
+                        }}
                         disabled={isUploading}
-                        className="w-full bg-primary hover:bg-blue-600 text-white font-medium py-2.5 rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20 disabled:opacity-70 disabled:cursor-wait"
+                        className={`w-full bg-primary hover:bg-primary/90 text-white font-medium py-2.5 rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/20 disabled:opacity-70 disabled:cursor-wait ${
+                            !hasClickedImport ? 'ring-2 ring-primary/50 ring-offset-2 ring-offset-white dark:ring-offset-zinc-900 animate-pulse' : ''
+                        }`}
                     >
                         {isUploading ? (
                             <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
@@ -311,15 +390,16 @@ const ImportWorkbench: React.FC = () => {
                             </div>
                             <div>
                                 <p className="text-sm font-medium text-zinc-900 dark:text-white group-hover:text-primary transition-colors">点击或拖拽文件到此处</p>
-                                <p className="text-xs text-zinc-500 mt-1">支持 PDF, PNG, JPG (最大 20MB)</p>
+                                <p className="text-xs text-zinc-500 mt-1">支持 PDF 全页识别、PNG、JPG（最大 20MB）</p>
                             </div>
                             <input
                                 ref={uploadInputRef}
                                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                                 type="file"
-                                accept="image/*"
+                                accept="image/*,application/pdf"
                                 onChange={handleFileChange}
                                 disabled={isUploading}
+                                multiple
                             />
                         </div>
                         {uploadError && (
@@ -329,6 +409,31 @@ const ImportWorkbench: React.FC = () => {
 
                     {/* Options */}
                     <div className="flex flex-col gap-3 relative z-20">
+                        <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">分类模型</label>
+                        <div className="flex gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setClassifyModel('openai/gpt-4o')}
+                                className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                                    classifyModel === 'openai/gpt-4o'
+                                        ? 'bg-primary/10 text-primary border-primary/30'
+                                        : 'bg-white dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border-zinc-200 dark:border-zinc-700 hover:border-primary/40'
+                                }`}
+                            >
+                                GPT-4o（OpenRouter）
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setClassifyModel('google/gemini-2.5-flash')}
+                                className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                                    classifyModel === 'google/gemini-2.5-flash'
+                                        ? 'bg-primary/10 text-primary border-primary/30'
+                                        : 'bg-white dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 border-zinc-200 dark:border-zinc-700 hover:border-primary/40'
+                                }`}
+                            >
+                                Gemini 2.5 Flash（OpenRouter）
+                            </button>
+                        </div>
                         <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300">保存至文件夹</label>
                         
                         <div className="relative" ref={dropdownRef}>
@@ -359,7 +464,7 @@ const ImportWorkbench: React.FC = () => {
                                                     value={newFolderTitle}
                                                     onChange={e => setNewFolderTitle(e.target.value)}
                                                 />
-                                                <button type="submit" className="p-1 bg-primary text-white rounded hover:bg-blue-600">
+                                                <button type="submit" className="p-1 bg-primary text-white rounded hover:bg-primary/90">
                                                     <Check size={14} />
                                                 </button>
                                                 <button type="button" onClick={() => setIsCreatingFolder(false)} className="p-1 text-zinc-400 hover:text-zinc-600">
@@ -384,13 +489,16 @@ const ImportWorkbench: React.FC = () => {
                                             onClick={() => {
                                                 setTargetFolder(null);
                                                 setIsDropdownOpen(false);
+                                                setHasSelectedFolder(true);
                                             }}
                                         >
                                             <span className="w-5 mr-1"></span>
                                             <Folder size={16} className="mr-2 text-zinc-400" />
                                             <span className="text-sm">收件箱 (未分类)</span>
                                         </div>
-                                        {treeData.map(node => renderFolderOption(node))}
+                                        {treeData
+                                            .filter(node => node.title !== '回收站')
+                                            .map(node => renderFolderOption(node))}
                                     </div>
                                 </div>
                             )}
@@ -432,34 +540,31 @@ const ImportWorkbench: React.FC = () => {
                         <h2 className="text-base font-semibold text-zinc-900 dark:text-white">识别结果确认</h2>
                     </div>
                     <div className="flex items-center gap-4">
-                        <div className="flex items-center bg-zinc-100 dark:bg-zinc-800 rounded-lg p-1 border border-zinc-200 dark:border-zinc-700/50">
-                            <button 
-                                onClick={() => setZoom(z => Math.max(50, z - 10))}
-                                className="p-1 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors"
-                            >
-                                <Minus size={18} />
-                            </button>
-                            <span className="px-3 text-xs font-medium text-zinc-700 dark:text-zinc-300 min-w-[3rem] text-center">{zoom}%</span>
-                            <button 
-                                onClick={() => setZoom(z => Math.min(200, z + 10))}
-                                className="p-1 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors"
-                            >
-                                <Plus size={18} />
-                            </button>
-                        </div>
-                        <div className="w-px h-4 bg-zinc-300 dark:bg-zinc-700"></div>
-                        <button className="text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition-colors">
+                        <button
+                            className="text-zinc-500 hover:text-zinc-900 dark:hover:text-white transition-colors"
+                            onClick={() => {
+                                if (hasUnsavedCandidates) {
+                                    const shouldLeave = window.confirm('当前识别结果尚未保存，确定要退出吗？');
+                                    if (!shouldLeave) return;
+                                }
+                                setViewMode('study');
+                            }}
+                            title="收起导入"
+                        >
                             <ChevronDown size={24} />
                         </button>
                     </div>
                 </header>
 
                 {/* Confirm Panel */}
-                <div className="flex-1 px-6 py-4 bg-white dark:bg-zinc-900 overflow-y-auto">
-                    <div className="flex items-center justify-between mb-3">
-                        <h3 className="text-sm font-semibold text-zinc-900 dark:text-white">识别结果确认</h3>
+                <div className="flex-1 px-6 py-4 bg-white dark:bg-zinc-900 overflow-y-auto flex flex-col">
+                    <div className="flex items-center justify-end mb-3">
                         <div className="flex items-center gap-2">
-                            {isAnalyzing && <span className="text-xs text-primary">分析中...</span>}
+                            {isAnalyzing && (
+                                <span className="text-xs text-primary">
+                                    {pdfProgressText || '分析中...'}
+                                </span>
+                            )}
                             {isCandidateSelectMode && (
                               <>
                                 <button
@@ -493,11 +598,17 @@ const ImportWorkbench: React.FC = () => {
                         </div>
                     </div>
                     {candidates.length === 0 ? (
-                        <div className="text-xs text-zinc-500">上传图片后将在这里显示待确认题目</div>
+                        <div className="text-base font-semibold text-zinc-600 dark:text-zinc-300 text-center py-6">
+                            {isAnalyzing
+                                ? '分析中，请稍候...'
+                                : analysisImageUrl
+                                    ? '识别完成，但未解析出题目，请检查图片清晰度或重试'
+                                    : '上传图片后将在这里显示待确认题目'}
+                        </div>
                     ) : (
                         <div className="space-y-3 pr-1">
                             {candidates.map((item, index) => (
-                                <div key={index} className="bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-800 rounded-lg p-3 space-y-2">
+                                <div key={index} className="bg-zinc-50/80 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-800 rounded-lg p-3 space-y-2">
                                     {isCandidateSelectMode && (
                                       <div className="flex items-center gap-2">
                                           <input
@@ -509,6 +620,16 @@ const ImportWorkbench: React.FC = () => {
                                           <span className="text-xs text-zinc-500">题目 {index + 1}</span>
                                       </div>
                                     )}
+                                    <div className="rounded-md border border-zinc-200/80 dark:border-zinc-700 bg-white/80 dark:bg-zinc-900/80 p-3">
+                                        <div className="text-[11px] uppercase tracking-wide text-zinc-500 dark:text-zinc-400 mb-2">
+                                            预览
+                                        </div>
+                                        <div className="flux-math prose prose-sm dark:prose-invert max-w-none leading-relaxed prose-p:leading-6 prose-p:my-2 text-zinc-700 dark:text-white/90 prose-p:text-zinc-700 dark:prose-p:text-white prose-li:text-zinc-700 dark:prose-li:text-white">
+                                            <ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                                                {preprocessLaTeX(item.content)}
+                                            </ReactMarkdown>
+                                        </div>
+                                    </div>
                                     <textarea
                                         value={item.content}
                                         onChange={(e) => {
@@ -517,7 +638,7 @@ const ImportWorkbench: React.FC = () => {
                                         }}
                                         className="w-full min-h-[80px] bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-md p-2 text-xs text-zinc-800 dark:text-zinc-200 focus:ring-1 focus:ring-primary outline-none"
                                     />
-                                    <div className="flex justify-between text-[10px] text-zinc-500">
+                                    <div className="flex justify-end text-[10px] text-zinc-500">
                                         <button
                                             type="button"
                                             onClick={() => setCandidates(prev => prev.filter((_, i) => i !== index))}
@@ -525,27 +646,17 @@ const ImportWorkbench: React.FC = () => {
                                         >
                                             删除此题
                                         </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setCandidates(prev => {
-                                                const next = [...prev];
-                                                next.splice(index + 1, 0, { content: '' });
-                                                return next;
-                                            })}
-                                            className="text-primary hover:text-blue-600"
-                                        >
-                                            添加新题
-                                        </button>
                                     </div>
                                 </div>
                             ))}
                         </div>
                     )}
-                    <div className="flex justify-end mt-4">
+                    <div className="mt-auto pt-6 flex items-center justify-end gap-3">
+                        {isSaving && <AIInlineLoader />}
                         <button
                             type="button"
                             onClick={handleSaveAll}
-                            className={`px-5 py-2.5 rounded-lg text-sm font-medium bg-primary hover:bg-blue-600 text-white shadow-lg shadow-blue-500/20 flex items-center gap-2 ${candidates.length === 0 || isSaving ? 'opacity-60 cursor-not-allowed' : ''}`}
+                            className={`px-5 py-2.5 rounded-lg text-sm font-medium bg-primary hover:bg-primary/90 text-white shadow-lg shadow-primary/20 flex items-center gap-2 ${candidates.length === 0 || isSaving ? 'opacity-60 cursor-not-allowed' : ''}`}
                         >
                             {isSaving && (
                                 <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin"></span>
@@ -556,6 +667,7 @@ const ImportWorkbench: React.FC = () => {
                 </div>
 
             </main>
+            {isAnalyzing && <AIFullScreenLoader backgroundImageUrl={analysisImageUrl} />}
         </>
     );
 };

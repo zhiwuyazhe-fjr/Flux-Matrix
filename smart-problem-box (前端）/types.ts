@@ -1,5 +1,7 @@
 
-export type ViewMode = 'study' | 'practice' | 'feedback' | 'import' | 'settings' | 'upgrade' | 'forgot_password' | 'register';
+import type { AnalysisResult } from './types/analysis';
+
+export type ViewMode = 'landing' | 'study' | 'practice' | 'feedback' | 'import' | 'settings' | 'upgrade' | 'help' | 'forgot_password' | 'register';
 
 export interface Problem {
   id: string;
@@ -7,6 +9,8 @@ export interface Problem {
   subject: string;
   difficulty: 'easy' | 'medium' | 'hard';
   timeAgo: string;
+  createdAt?: string;
+  analysisResult?: AnalysisResult | null;
   tags: string[];
   description?: string; // HTML or Markdown content
   isFavorite?: boolean;

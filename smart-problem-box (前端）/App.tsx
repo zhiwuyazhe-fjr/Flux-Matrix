@@ -12,35 +12,35 @@ import LoginView from './components/views/LoginView';
 import ForgotPasswordView from './components/views/ForgotPasswordView';
 import RegisterView from './components/views/RegisterView';
 import SettingsView from './components/views/SettingsView';
+import HelpCenter from './components/views/HelpCenter';
 import UpgradeView from './components/views/UpgradeView';
+import LandingPage from './components/views/LandingPage';
 import { ChevronRight, MoreHorizontal, Maximize2, Minimize2, Moon, Sun, PanelLeft } from 'lucide-react';
 
 const AppContent: React.FC = () => {
-  const { state, problems, treeData, setViewMode, toggleFullscreen, toggleDarkMode, setSelectedFolder, toggleSidebar, setColumnWidth } = useStore();
+  const { state, problems, treeData, setViewMode, toggleFullscreen, toggleDarkMode, setSelectedFolder, setExpandedNodes, setCurrentProblem, toggleSidebar, setColumnWidth, deleteProblem } = useStore();
   
-  // Auth Check
-  if (!state.isLoggedIn) {
-      if (state.currentView === 'forgot_password') {
-          return <ForgotPasswordView />;
-      }
-      if (state.currentView === 'register') {
-          return <RegisterView />;
-      }
-      return <LoginView />;
-  }
+  const [resizing, setResizing] = useState<'sidebar' | 'middle' | null>(null);
+  const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
 
   const currentProblem = state.currentProblemId ? problems[state.currentProblemId] : null;
   
   // Views that take up the full right area (hide Problem List)
-  const isFullPageView = ['import', 'settings', 'upgrade'].includes(state.currentView);
-
-  const [resizing, setResizing] = useState<'sidebar' | 'middle' | null>(null);
+  const isFullPageView = ['import', 'settings', 'upgrade', 'help'].includes(state.currentView);
 
   // Drag Handlers
   const startResizing = (type: 'sidebar' | 'middle') => (e: React.MouseEvent) => {
     e.preventDefault();
     setResizing(type);
   };
+
+  useEffect(() => {
+    const handleClickOutside = () => {
+      setIsHeaderMenuOpen(false);
+    };
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -104,11 +104,25 @@ const AppContent: React.FC = () => {
     return findPath(treeData, state.currentProblemId, []) || [];
   }, [state.currentProblemId, treeData]);
 
+  const authView = useMemo(() => {
+    if (state.isLoggedIn) return null;
+    if (state.currentView === 'landing') return <LandingPage />;
+    if (state.currentView === 'forgot_password') return <ForgotPasswordView />;
+    if (state.currentView === 'register') return <RegisterView />;
+    return <LoginView />;
+  }, [state.isLoggedIn, state.currentView]);
+
+  // Auth Check
+  if (!state.isLoggedIn) {
+    return authView;
+  }
+
   // Main Render Logic
   const renderMainContent = () => {
       if (state.currentView === 'import') return <ImportWorkbench />;
       if (state.currentView === 'settings') return <SettingsView />;
       if (state.currentView === 'upgrade') return <UpgradeView />;
+      if (state.currentView === 'help') return <HelpCenter />;
 
       // Default Standard Views (Study/Practice/Feedback)
       return (
@@ -128,10 +142,10 @@ const AppContent: React.FC = () => {
             )}
 
             {/* Standard View: Main Content Area */}
-            <main className="flex-1 flex flex-col bg-zinc-50 dark:bg-background-dark min-w-0 h-full relative">
+            <main className="flex-1 flex flex-col flux-panel min-w-0 h-full relative">
                 
                 {/* Sticky Header */}
-                <header className="h-16 flex-none flex items-center justify-between px-6 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-background-dark sticky top-0 z-10 shadow-sm">
+                <header className="h-16 flex-none flex items-center justify-between px-6 border-b flux-divider flux-panel sticky top-0 z-10 shadow-sm">
                 
                 {/* Left Side: Toggle Sidebar (if list hidden) + Breadcrumbs */}
                 <div className="flex items-center text-sm text-zinc-500 overflow-hidden whitespace-nowrap mr-4 mask-linear-fade">
@@ -156,6 +170,13 @@ const AppContent: React.FC = () => {
                                         onClick={() => {
                                             if (node.type === 'folder') {
                                                 setSelectedFolder(node.id);
+                                                const folderPath = breadcrumbs
+                                                  .filter((item) => item.type === 'folder')
+                                                  .slice(0, index + 1)
+                                                  .map((item) => item.id);
+                                                setExpandedNodes(folderPath);
+                                                setCurrentProblem(null);
+                                                setViewMode('study');
                                             }
                                         }}
                                         disabled={isLast} 
@@ -222,9 +243,34 @@ const AppContent: React.FC = () => {
                     {state.isFullscreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
                     </button>
                     
-                    <button className="text-zinc-400 hover:text-primary transition-colors ml-1">
-                    <MoreHorizontal size={24} />
-                    </button>
+                    <div className="relative ml-1">
+                        <button
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setIsHeaderMenuOpen((prev) => !prev);
+                            }}
+                            className="text-zinc-400 hover:text-primary transition-colors p-1 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                            title="更多"
+                        >
+                            <MoreHorizontal size={24} />
+                        </button>
+                        {isHeaderMenuOpen && currentProblem && (
+                            <div
+                                className="absolute right-0 mt-2 w-32 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-xl z-20 overflow-hidden animate-fade-in"
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                <button
+                                    onClick={() => {
+                                        deleteProblem(currentProblem.id);
+                                        setIsHeaderMenuOpen(false);
+                                    }}
+                                    className="w-full flex items-center gap-2 px-4 py-2 text-xs text-red-600 dark:text-red-400 hover:bg-zinc-50 dark:hover:bg-zinc-800"
+                                >
+                                    删除题目
+                                </button>
+                            </div>
+                        )}
+                    </div>
                 </div>
                 </header>
 
@@ -256,7 +302,7 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen w-screen bg-zinc-50 dark:bg-background-dark text-zinc-900 dark:text-white font-display overflow-hidden">
+    <div className="flux-root flex h-screen w-screen text-[#E0E0E0] font-mono overflow-hidden">
         
       {/* Sidebar */}
       {state.isSidebarOpen && <Sidebar />}

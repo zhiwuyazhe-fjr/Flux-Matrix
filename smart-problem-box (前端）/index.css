@@ -1,0 +1,401 @@
+/* Flux Matrix base theme */
+:root {
+  color-scheme: light;
+  --flux-bg: #eff3f8;
+  --flux-bg-deep: #e6ebf2;
+  --flux-text: #0f172a;
+  --flux-muted: #64748b;
+  --flux-accent: #00bcd4;
+  --flux-accent-soft: rgba(0, 188, 212, 0.16);
+  --flux-glass: rgba(245, 248, 252, 0.95);
+  --flux-border: rgba(2, 132, 199, 0.16);
+  --flux-input-bg: rgba(226, 232, 240, 0.9);
+  --flux-button-text: #041016;
+  --flux-grid-color: rgba(2, 132, 199, 0.06);
+  --flux-glow-1: rgba(59, 130, 246, 0.18);
+  --flux-glow-2: rgba(14, 165, 233, 0.14);
+}
+
+.dark {
+  color-scheme: dark;
+  --flux-bg: #05050a;
+  --flux-bg-deep: #0a0a0f;
+  --flux-text: #e0e0e0;
+  --flux-muted: #888888;
+  --flux-accent: #00f0ff;
+  --flux-accent-soft: rgba(0, 240, 255, 0.18);
+  --flux-glass: rgba(5, 8, 14, 0.58);
+  --flux-border: rgba(0, 240, 255, 0.12);
+  --flux-input-bg: rgba(6, 9, 18, 0.75);
+  --flux-button-text: #001014;
+  --flux-grid-color: rgba(0, 240, 255, 0.08);
+  --flux-glow-1: rgba(0, 240, 255, 0.16);
+  --flux-glow-2: rgba(0, 120, 255, 0.12);
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--flux-bg);
+  color: var(--flux-text);
+  font-family: "JetBrains Mono", "SF Mono", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", monospace;
+}
+
+body {
+  position: relative;
+  overflow: hidden;
+  background: var(--flux-bg);
+}
+
+body:not(.dark) .text-gray-400,
+body:not(.dark) .text-gray-500,
+body:not(.dark) .text-zinc-400,
+body:not(.dark) .text-zinc-500 {
+  color: #475569 !important;
+}
+
+body:not(.dark) .text-zinc-600,
+body:not(.dark) .text-gray-600 {
+  color: #334155 !important;
+}
+
+body:not(.dark) [class*="text-emerald"],
+body:not(.dark) [class*="text-green"] {
+  color: #0ea5e9 !important;
+}
+
+body:not(.dark) [class*="bg-emerald"],
+body:not(.dark) [class*="bg-green"] {
+  background-color: rgba(14, 165, 233, 0.12) !important;
+}
+
+body:not(.dark) [class*="border-emerald"],
+body:not(.dark) [class*="border-green"] {
+  border-color: rgba(14, 165, 233, 0.3) !important;
+}
+
+.dark {
+  color: #e5e7eb;
+}
+
+.dark .text-white,
+.dark .text-gray-100,
+.dark .text-zinc-100 {
+  color: #f8fafc !important;
+}
+
+.dark .text-gray-200,
+.dark .text-zinc-200 {
+  color: #e5e7eb !important;
+}
+
+.dark .text-gray-300,
+.dark .text-zinc-300 {
+  color: #d1d5db !important;
+}
+
+.dark .text-gray-400,
+.dark .text-zinc-400 {
+  color: #cbd5f5 !important;
+}
+
+.dark .text-gray-500,
+.dark .text-zinc-500 {
+  color: #9ca3af !important;
+}
+
+.dark .text-gray-600,
+.dark .text-zinc-600 {
+  color: #94a3b8 !important;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    radial-gradient(var(--flux-grid-color) 1px, transparent 1px);
+  background-size: 24px 24px;
+  opacity: 0.4;
+  pointer-events: none;
+  z-index: 0;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: -25%;
+  background:
+    radial-gradient(closest-side at 15% 25%, var(--flux-glow-1), transparent 60%),
+    radial-gradient(closest-side at 80% 15%, var(--flux-glow-2), transparent 55%),
+    radial-gradient(closest-side at 65% 80%, var(--flux-glow-1), transparent 60%);
+  filter: blur(60px);
+  opacity: 0.5;
+  animation: flux-drift 22s ease-in-out infinite alternate;
+  pointer-events: none;
+  z-index: 0;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+}
+
+.flux-root {
+  background: transparent;
+}
+
+.flux-panel {
+  background: var(--flux-glass);
+  border: 1px solid var(--flux-border);
+  box-shadow:
+    0 0 0 1px rgba(2, 132, 199, 0.06),
+    0 18px 48px rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(28px);
+}
+
+body:not(.dark) .shadow-sm,
+body:not(.dark) .shadow-lg,
+body:not(.dark) .shadow-xl,
+body:not(.dark) .shadow-2xl,
+body:not(.dark) .shadow {
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.08) !important;
+}
+
+body:not(.dark) [class*="shadow-["] {
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.08) !important;
+}
+
+.flux-card {
+  position: relative;
+  border-radius: 20px;
+  background: var(--flux-glass);
+  border: 1px solid var(--flux-border);
+  box-shadow:
+    0 0 25px rgba(0, 240, 255, 0.08),
+    0 30px 80px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(30px);
+  overflow: hidden;
+}
+
+.flux-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at top, rgba(0, 240, 255, 0.08), transparent 60%);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.flux-gradient-border {
+  position: relative;
+  border-radius: 14px;
+  padding: 1px;
+  background: linear-gradient(120deg, rgba(0, 240, 255, 0.2), rgba(0, 240, 255, 0.6), rgba(0, 120, 255, 0.2), rgba(0, 240, 255, 0.3));
+  background-size: 300% 300%;
+  animation: flux-border 8s linear infinite;
+}
+
+.flux-input {
+  position: relative;
+  border-radius: 13px;
+  background: var(--flux-input-bg);
+  box-shadow: inset 0 0 0 1px rgba(0, 240, 255, 0.08);
+  backdrop-filter: blur(18px);
+}
+
+.flux-divider {
+  border-color: color-mix(in srgb, var(--flux-accent) 14%, transparent) !important;
+}
+
+.flux-divider-strong {
+  border-color: color-mix(in srgb, var(--flux-accent) 22%, transparent) !important;
+}
+
+body:not(.dark) .flux-divider {
+  border-color: rgba(15, 23, 42, 0.08) !important;
+}
+
+body:not(.dark) .flux-divider-strong {
+  border-color: rgba(15, 23, 42, 0.12) !important;
+}
+
+.flux-input:focus-within {
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 240, 255, 0.45),
+    0 0 18px rgba(0, 240, 255, 0.2);
+}
+
+.flux-input-field {
+  background: transparent;
+  color: var(--flux-text);
+}
+
+.flux-button {
+  position: relative;
+  border-radius: 14px;
+  background: linear-gradient(120deg, rgba(0, 240, 255, 0.15), rgba(0, 240, 255, 0.9), rgba(0, 120, 255, 0.6));
+  background-size: 200% 200%;
+  color: var(--flux-button-text);
+  font-weight: 600;
+  box-shadow:
+    0 0 22px rgba(0, 240, 255, 0.4),
+    0 12px 30px rgba(0, 0, 0, 0.35);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  animation: flux-border 6s linear infinite;
+}
+
+.flux-button:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 0 30px rgba(0, 240, 255, 0.55),
+    0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.flux-button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.flux-link {
+  color: var(--flux-accent);
+}
+
+.flux-outline {
+  border: 1px solid rgba(0, 240, 255, 0.35);
+  box-shadow: 0 0 18px rgba(0, 240, 255, 0.25);
+}
+
+.flux-glow {
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.25);
+}
+
+.flux-accent-text {
+  color: var(--flux-accent);
+}
+
+@keyframes flux-drift {
+  0% {
+    transform: translate3d(-2%, -1%, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(2%, 1%, 0) scale(1.05);
+  }
+  100% {
+    transform: translate3d(-1%, 2%, 0) scale(1.08);
+  }
+}
+
+@keyframes flux-border {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.flux-root button {
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px rgba(0, 205, 224, 0.08);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.flux-root button:hover {
+  box-shadow: 0 0 18px rgba(0, 205, 224, 0.25);
+}
+
+.flux-root :where(input:not([type="checkbox"]):not([type="radio"]), textarea, select) {
+  background: var(--flux-input-bg) !important;
+  border-color: var(--flux-border) !important;
+  color: var(--flux-text) !important;
+  box-shadow: inset 0 0 0 1px rgba(0, 205, 224, 0.08);
+  border-radius: 12px;
+}
+
+.flux-root :where(input:not([type="checkbox"]):not([type="radio"]), textarea, select):focus {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 205, 224, 0.45),
+    0 0 16px rgba(0, 205, 224, 0.2);
+}
+
+.flux-root :where(input:not([type="checkbox"]):not([type="radio"]), textarea, select)::placeholder {
+  color: color-mix(in srgb, var(--flux-muted) 70%, transparent);
+}
+
+.flux-root input[type="checkbox"],
+.flux-root input[type="radio"] {
+  accent-color: var(--flux-accent);
+}
+
+.flux-math .katex {
+  color: #e5e7eb;
+}
+
+.flux-math .katex-display {
+  background: rgba(255, 255, 255, 0.05);
+  border-left: 2px solid rgba(34, 211, 238, 0.8);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.solution-display .katex {
+  color: inherit;
+}
+
+.solution-display .katex-display {
+  background: rgba(255, 255, 255, 0.05);
+  border-left: 2px solid rgba(34, 211, 238, 0.8);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 8px 0;
+}
+
+.dark .flux-math,
+.dark .solution-display {
+  color: #e5e7eb !important;
+}
+
+.dark .flux-math .katex {
+  color: #e5e7eb !important;
+}
+
+.dark .flux-math .katex * {
+  color: #e5e7eb !important;
+}
+
+.dark .solution-display .katex,
+.dark .solution-display .katex * {
+  color: #e5e7eb !important;
+}
+
+body:not(.dark) .flux-math,
+body:not(.dark) .solution-display {
+  color: #0f172a;
+}
+
+body:not(.dark) .flux-math .katex,
+body:not(.dark) .solution-display .katex {
+  color: #0f172a;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 240, 255, 0.2);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.35);
+}

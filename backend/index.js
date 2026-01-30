@@ -1,647 +1,602 @@
-require('dotenv').config();
-
 const express = require('express');
 const cors = require('cors');
+const dotenv = require('dotenv');
 const { createClient } = require('@supabase/supabase-js');
 const { z } = require('zod');
+
+dotenv.config();
 
 const {
   SUPABASE_URL,
   SUPABASE_ANON_KEY,
   SUPABASE_SERVICE_ROLE_KEY,
   OPENAI_API_KEY,
-  OPENAI_BASE_URL,
-  OPENAI_MODEL,
+  OPENROUTER_API_KEY,
+  OPENAI_BASE_URL = 'https://openrouter.ai/api/v1',
+  OPENAI_MODEL = 'openai/gpt-4o',
   OPENROUTER_REFERER,
-  OPENROUTER_TITLE
+  OPENROUTER_TITLE,
+  SILICONFLOW_API_KEY,
+  SILICONFLOW_BASE_URL = 'https://api.siliconflow.cn/v1',
+  DASHSCOPE_API_KEY,
+  OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small'
 } = process.env;
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
-  console.error('缺少环境变量：SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY');
-  process.exit(1);
+  console.warn('缺少 Supabase 环境变量，请检查 backend/.env');
 }
 
-const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-const supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
 const app = express();
+app.use(cors());
+app.use(express.json({ limit: '20mb' }));
 
-app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: '5mb' }));
-
-const getUserFromRequest = async (req) => {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return { error: 'missing_token' };
-
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !data?.user) {
-    return { error: 'invalid_token' };
-  }
-
-  return { user: data.user, token };
-};
-
-const requireAuth = async (req, res, next) => {
-  const { user, error } = await getUserFromRequest(req);
-  if (error) {
-    return res.status(401).json({ message: '未登录或会话已过期' });
-  }
-  req.user = user;
-  next();
-};
-
-const ensureProfile = async (user) => {
-  const { data: existing, error } = await supabaseAdmin
-    .from('profiles')
-    .select('id,name,email,avatar,plan')
-    .eq('id', user.id)
-    .maybeSingle();
-
-  if (existing && !error) return existing;
-
-  const profilePayload = {
-    id: user.id,
-    name: user.user_metadata?.name || user.email?.split('@')[0] || '新用户',
-    email: user.email || '',
-    plan: 'free'
-  };
-
-  const { data: inserted, error: insertError } = await supabaseAdmin
-    .from('profiles')
-    .insert(profilePayload)
-    .select('id,name,email,avatar,plan')
-    .single();
-
-  if (insertError) {
-    throw insertError;
-  }
-
-  return inserted;
-};
-
-const normalizeProblem = (problem) => ({
-  id: problem.id,
-  title: problem.title,
-  subject: problem.subject,
-  difficulty: problem.difficulty,
-  timeAgo: problem.time_ago || '刚刚',
-  tags: problem.tags || [],
-  description: problem.description || undefined
+const supabase = createClient(SUPABASE_URL || '', SUPABASE_ANON_KEY || '', {
+  auth: { persistSession: false }
+});
+const supabaseAdmin = createClient(SUPABASE_URL || '', SUPABASE_SERVICE_ROLE_KEY || '', {
+  auth: { persistSession: false }
 });
 
-const parseDataUrl = (dataUrl) => {
-  if (!dataUrl || typeof dataUrl !== 'string') return null;
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-  if (!match) return null;
-  return {
-    mime: match[1],
-    data: match[2]
-  };
-};
+const ANALYSIS_SYSTEM_PROMPT = `
+# Role
 
-const getExtensionFromMime = (mime) => {
-  if (!mime) return 'png';
-  if (mime.includes('jpeg')) return 'jpg';
-  if (mime.includes('jpg')) return 'jpg';
-  if (mime.includes('png')) return 'png';
-  if (mime.includes('webp')) return 'webp';
-  return 'png';
-};
+你是一位世界级的理工科金牌讲师，专门擅长辅导高中基础的学生攻克大学难度的题目。
+你的核心能力是“降维打击”：将晦涩的大学知识点（如微积分、线性代数、物理等），通过通俗易懂的语言和高中知识进行类比，讲透其本质，同时在解题过程中保持数学推导的绝对严谨。
 
-const CandidateSchema = z.object({
-  content: z.string().min(1)
-});
+# User Input
 
-const CandidateListSchema = z.array(CandidateSchema);
+前一步处理完的一段理工科题目的文本。
+
+# Core Workflow
+
+你必须严格按照以下三个阶段进行思维处理和输出：
+
+## Phase 1: 深度拆解 (Deep Analysis) - 教学模式
+
+1. **关键概念扫盲 (Concept Explanation)**:
+    - 提取题目核心术语（如“特征值”、“全微分”）。
+    - **降维讲解**：不要堆砌定义。必须使用“高中知识类比”或“直觉解释”来说明它是什么、有什么用。
+2. **逻辑战略地图 (Logic Strategy)**:
+    - **动笔前的思考**：像教人走迷宫一样，先画出路线图。
+    - 解释思路：第一步做什么，第二步做什么，为什么要选这条路（而不是别的路）。
+3. **核心步骤详解 (Step-by-Step Solution)**:
+    - **保姆级推导**：步骤必须严谨、连贯。
+    - 严禁跳步：假设用户看不懂省略的中间运算，把每一个变形的理由都写清楚。
+
+## Phase 2: 格式化输出 (Formatting)
+
+1. **LaTeX 强制规则**:
+    - 所有数学符号、变量、公式必须使用 LaTeX。
+    - 行内公式：使用 \`$ ... $\` 包裹（如 $f(x) = x^2$）。
+    - 独立公式：使用 \`$$...$$\` 包裹。
+    - 禁止出现纯文本数学符号（如 x^2, a/b）。
+2. **JSON 输出规则**:
+    - 结果必须且只能是一个合法的 JSON 对象。
+    - 不要使用 Markdown 的代码块标记（即不要输出 \`json 或\` ）。
+    - 确保 JSON 格式能够被程序直接解析。
+
+# Output JSON Structure
+
+请严格填充以下 JSON 模板返回结果：
+
+{
+"title_essence": "利用[方法]解决[问题]",
+"tags": {
+"subject": "学科",
+"category": "章节/大范畴",
+"concept": "具体考点"
+},
+"analysis": {
+"concept_explanation": "Markdown 文本。解释核心概念，使用高中类比，公式用 $...$ 包裹。",
+"logic_strategy": "Markdown 文本。解题前的思路规划，公式用 $...$ 包裹。",
+"full_solution": "Markdown 文本。完整的保姆级推导过程，独立公式用 $$...$$ 包裹，行内公式用 $...$ 包裹。"
+}
+}
+`;
 
 const AnalysisResultSchema = z.object({
-  title: z.string(),
-  input_check: z.object({
-    is_complete: z.boolean(),
-    issue_description: z.string().nullable()
-  }),
-  essence_one_sentence: z.string(),
+  title_essence: z.string(),
   tags: z.object({
-    big: z.string(),
-    mid: z.string(),
-    small: z.string()
+    subject: z.string(),
+    category: z.string(),
+    concept: z.string()
   }),
-  learning_mode: z.object({
-    assumed_level: z.literal('zero'),
-    key_concepts: z.array(z.object({
-      name: z.string(),
-      plain_explain: z.string(),
-      why_it_matters: z.string()
-    })),
+  analysis: z.object({
+    concept_explanation: z.string(),
     logic_strategy: z.string(),
-    solution_steps: z.array(z.object({
-      step_seq: z.number(),
-      goal: z.string(),
-      details: z.string(),
-      check_point: z.string()
-    })),
-    final_answer: z.string(),
-    common_mistakes: z.array(z.string()),
-    self_check: z.array(z.string())
+    full_solution: z.string()
   })
 });
 
-const parseCandidates = (raw) => {
-  if (!raw || typeof raw !== 'string') return null;
+const PracticeFeedbackSchema = z.object({
+  verdict: z.enum(['correct', 'partial', 'incorrect']),
+  score: z.number().min(0).max(100),
+  summary: z.string(),
+  strengths: z.array(z.string()),
+  improvements: z.array(z.string()),
+  next_steps: z.array(z.string()),
+  correct_answer: z.string(),
+  solution_steps: z.string()
+});
+
+const PracticeGenerateSchema = z.object({
+  new_question_text: z.string(),
+  question_type: z.string(),
+  options: z.array(z.string()).optional(),
+  thinking_process: z.string(),
+  correct_answer: z.string(),
+  explanation: z.string()
+});
+
+const PracticeGradeSchema = z.object({
+  internal_calculation_check: z.string(),
+  is_correct: z.boolean(),
+  feedback: z.string(),
+  standard_solution: z.object({
+    steps: z.array(z.object({
+      seq: z.number(),
+      content: z.string()
+    })),
+    final_answer_latex: z.string()
+  })
+});
+
+const getProviderConfig = (model) => {
+  const normalized = model || OPENAI_MODEL;
+  if (normalized.startsWith('deepseek-ai/') || normalized.startsWith('Qwen/')) {
+    return {
+      baseUrl: SILICONFLOW_BASE_URL,
+      apiKey: SILICONFLOW_API_KEY,
+      headers: { 'Content-Type': 'application/json' }
+    };
+  }
+  return {
+    baseUrl: OPENAI_BASE_URL,
+    apiKey: OPENROUTER_API_KEY || OPENAI_API_KEY,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(OPENROUTER_REFERER ? { 'HTTP-Referer': OPENROUTER_REFERER } : {}),
+      ...(OPENROUTER_TITLE ? { 'X-Title': OPENROUTER_TITLE } : {})
+    }
+  };
+};
+
+const callChatCompletions = async ({ model, messages, response_format, temperature }) => {
+  const provider = getProviderConfig(model);
+  if (!provider.apiKey) {
+    return { ok: false, error: '缺少模型平台的 API Key' };
+  }
+
+  const aiResponse = await fetch(`${provider.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      ...provider.headers,
+      Authorization: `Bearer ${provider.apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      ...(response_format ? { response_format } : {}),
+      ...(typeof temperature === 'number' ? { temperature } : {})
+    })
+  });
+
+  const aiJson = await aiResponse.json();
+  if (!aiResponse.ok) {
+    return { ok: false, error: aiJson?.error?.message || '模型请求失败' };
+  }
+  return { ok: true, data: aiJson };
+};
+
+const callEmbeddings = async ({ input, model }) => {
+  const apiKey = OPENROUTER_API_KEY || OPENAI_API_KEY;
+  if (!apiKey) {
+    return { ok: false, error: '缺少 OpenRouter/OpenAI API Key' };
+  }
+
+  const aiResponse = await fetch(`${OPENAI_BASE_URL}/embeddings`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      ...(OPENROUTER_REFERER ? { 'HTTP-Referer': OPENROUTER_REFERER } : {}),
+      ...(OPENROUTER_TITLE ? { 'X-Title': OPENROUTER_TITLE } : {})
+    },
+    body: JSON.stringify({
+      model: model || OPENAI_EMBEDDING_MODEL,
+      input
+    })
+  });
+
+  const aiJson = await aiResponse.json();
+  if (!aiResponse.ok) {
+    return { ok: false, error: aiJson?.error?.message || 'Embedding 请求失败' };
+  }
+  return { ok: true, data: aiJson };
+};
+
+const parseJsonFromContent = (content) => {
+  if (!content || typeof content !== 'string') return null;
   try {
-    const parsed = JSON.parse(raw);
-    return CandidateListSchema.parse(parsed);
+    return JSON.parse(content);
   } catch {
-    // Try to extract JSON array from markdown/code fences or extra text
-    const match = raw.match(/\[[\s\S]*\]/);
+    const match = content.match(/\{[\s\S]*\}/);
     if (!match) return null;
     try {
-      const parsed = JSON.parse(match[0]);
-      return CandidateListSchema.parse(parsed);
+      return JSON.parse(match[0]);
     } catch {
       return null;
     }
   }
 };
 
-const ANALYSIS_SYSTEM_PROMPT = `
-
-# Role
-
-你是一个“Smart题库助手”的核心分析引擎。你的输入是**一道数学/理科题目的文本内容**（由前序 OCR 步骤生成）。
-
-你的任务是：基于这段文本，进行深度语义分析，输出**针对零基础小白的深度学习教程**，并严格以 **JSON 格式**输出。
-
-# Input
-
-用户提供的题目文本字符串（可能包含 LaTeX 或 纯文本符号）。
-
-# Output Constraint (Highest Priority)
-
-1. **只输出一个 JSON 对象**。
-2. **严禁**输出 markdown 代码块标记（如 \`\`\`json），严禁输出任何 JSON 以外的解释性文字。
-3. **输出格式标准化**：
-    - 所有数学公式必须转化为标准 LaTeX 格式。
-    - 行内公式用 \`$ ... $\` 包裹。
-    - 独立公式用 \`$$...$$\` 包裹。
-    - 示例：输入可能是 "x^2 + y^2 = 1"，输出必须是 "$x^2 + y^2 = 1$"。
-
-# Workflow & Rules
-
-## 1. 文本完整性校验 (Data Integrity Check)
-
-- 在分析前，先判断输入的文本在数学逻辑上是否完整。
-- 如果文本存在明显 OCR 错误（如“求函数 f(x)= 的导数”后面没字了），必须在 JSON 的 \`input_check\` 字段报错，不要强行解答。
-
-## 2. 一句话本质总结 (Field: \`essence_one_sentence\`)
-
-- **标准**：必须符合句式 **“使用[核心方法/知识点]完成[具体任务]”**。
-- **铁律**：
-    - 长度严格控制在 **25 个中文字符以内**。
-    - **禁止**给出答案，**禁止**解释过程。
-    - **禁止**出现“本题”、“这道题”等废话。
-    - 示例：✅ “利用洛必达法则求0/0型极限” | ❌ “这道题让我们求极限”
-
-## 3. 标签体系 (Field: \`tags\`)
-
-- **big (Level 1)**: 学科（如：高等数学、线性代数）。
-- **mid (Level 2)**: 题型范畴（如：微分方程求解）。
-- **small (Level 3)**: 具体考点（如：二阶常系数齐次方程）。
-
-## 4. 零基础学习模式 (Field: \`learning_mode\`)
-
-- **核心假设**：用户是**完全零基础**的小白（assumed_level: "zero"）。
-- **关键概念 (key_concepts)**：
-    - 提取题目中 3-5 个核心术语。
-    - **plain_explain**: 用**大白话或生活类比**解释它是什么（<60字），拒绝学术堆砌。
-    - **why_it_matters**: 解释为什么要用这个概念解这道题。
-- **解题战略 (logic_strategy)**：
-    - **逻辑先行，计算在后**。先用一段文字描述宏观思路（第一步干嘛，第二步干嘛），就像教人走迷宫先画路线图。
-- **步骤详解 (solution_plan)**：
-    - 步骤必须严谨，逻辑连贯。
-    - 每一步包含 \`goal\` (这一步要干嘛) 和 \`details\` (详细推导，Markdown + LaTeX)。
-
-# JSON Schema (Strictly Follow)
-
-{
-
-"title": "题目名称（直接复用 essence_one_sentence）",
-
-"input_check": {
-
-"is_complete": true,
-
-"issue_description": "如果完整填 null；如果不完整，描述缺了什么（如：缺少等号右边的数据）"
-
-},
-
-"essence_one_sentence": "使用[方法]完成[任务]",
-
-"tags": {
-
-"big": "学科",
-
-"mid": "范畴",
-
-"small": "考点"
-
-},
-
-"learning_mode": {
-
-"assumed_level": "zero",
-
-"key_concepts": [
-
-  {
-
-    "name": "概念名称（如：洛必达法则）",
-
-    "plain_explain": "小白解释（如：当分子分母大家一起趋向于0时，比较它们变化快慢的方法...）",
-
-    "why_it_matters": "本题中负责处理 x->0 时的不定型问题"
-
-  }
-
-],
-
-"logic_strategy": "一段 Markdown 文本。先描述宏观解题思路（不要堆砌公式，用文字讲逻辑）。",
-
-"solution_steps": [
-
-  {
-
-    "step_seq": 1,
-
-    "goal": "这一步的目标（如：化简分子）",
-
-    "details": "这一步的详细推导过程（Markdown + LaTeX）",
-
-    "check_point": "小贴士：注意这里不要漏掉负号"
-
-  }
-
-],
-
-"final_answer": "最终结果（使用 LaTeX，如 $x=1$）。如果信息缺失无法计算，填'因信息缺失无法给出'",
-
-"common_mistakes": [
-
-  "易错点1（必须贴合本题）",
-
-  "易错点2"
-
-],
-
-"self_check": [
-
-  "自检方法1"
-
-]
-
-}
-
-}
-
-`;
-
-const callOpenAIForQuestions = async (imageUrl) => {
-  if (!OPENAI_API_KEY) {
-    throw new Error('未配置 OPENAI_API_KEY');
-  }
-
-  const baseUrl = OPENAI_BASE_URL || 'https://api.openai.com/v1';
-  const model = OPENAI_MODEL || 'gpt-4o';
-
-  const payload = {
-    model,
-    messages: [
-      {
-        role: 'system',
-        content: '你是一个善于拆解题目的助手，只输出 JSON 数组，不要带其它说明。'
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: "请分析图片，识别出里面的所有题目。请将每一道题的内容提取出来。若题目包含选择题选项，请把选项一并写入题目文本中（例如：A. ... B. ... C. ... D. ...）。返回一个 JSON 数组，格式为 [{ content: '题目文本...' }, ...]。只返回 JSON。"
-          },
-          {
-            type: 'image_url',
-            image_url: { url: imageUrl }
-          }
-        ]
-      }
-    ],
-    temperature: 0.2
-  };
-
-  const headers = {
-    Authorization: `Bearer ${OPENAI_API_KEY}`,
-    'Content-Type': 'application/json'
-  };
-
-  const isAscii = (value) => /^[\x00-\x7F]*$/.test(value);
-
-  if (OPENROUTER_REFERER && isAscii(OPENROUTER_REFERER)) {
-    headers['HTTP-Referer'] = OPENROUTER_REFERER;
-  }
-  if (OPENROUTER_TITLE && isAscii(OPENROUTER_TITLE)) {
-    headers['X-Title'] = OPENROUTER_TITLE;
-  }
-
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload)
+const normalizeTagWithAI = async ({ subject, aiProposedTag }) => {
+  if (!aiProposedTag || !subject) return aiProposedTag || '';
+
+  const embedResult = await callEmbeddings({ input: aiProposedTag });
+  if (!embedResult.ok) return aiProposedTag;
+  const embedding = embedResult.data?.data?.[0]?.embedding;
+  if (!Array.isArray(embedding)) return aiProposedTag;
+
+  const { data: matches, error } = await supabaseAdmin.rpc('match_tag', {
+    query_embedding: embedding,
+    match_threshold: 0.8,
+    filter_subject: subject
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenAI 调用失败: ${errorText}`);
+  if (!error && Array.isArray(matches) && matches.length > 0) {
+    const best = matches[0];
+    if (best?.name) return best.name;
   }
 
-  const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error('OpenAI 未返回有效内容');
-  }
+  await supabaseAdmin
+    .from('standard_tags')
+    .upsert({ subject, name: aiProposedTag, embedding }, { onConflict: 'subject,name' });
 
-  const candidates = parseCandidates(content);
-  if (!candidates) {
-    throw new Error('OpenAI 返回格式不符合预期');
-  }
-
-  return candidates;
+  return aiProposedTag;
 };
 
-const callOpenAIForAnalysis = async (questionText) => {
-  if (!OPENAI_API_KEY) {
-    throw new Error('未配置 OPENAI_API_KEY');
-  }
-
-  const baseUrl = OPENAI_BASE_URL || 'https://api.openai.com/v1';
-  const model = OPENAI_MODEL || 'gpt-4o';
-
-  const payload = {
-    model,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: ANALYSIS_SYSTEM_PROMPT },
-      { role: 'user', content: questionText }
-    ],
-    temperature: 0.2
-  };
-
-  const headers = {
-    Authorization: `Bearer ${OPENAI_API_KEY}`,
-    'Content-Type': 'application/json'
-  };
-
-  const isAscii = (value) => /^[\x00-\x7F]*$/.test(value);
-  if (OPENROUTER_REFERER && isAscii(OPENROUTER_REFERER)) {
-    headers['HTTP-Referer'] = OPENROUTER_REFERER;
-  }
-  if (OPENROUTER_TITLE && isAscii(OPENROUTER_TITLE)) {
-    headers['X-Title'] = OPENROUTER_TITLE;
-  }
-
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`OpenAI 调用失败: ${errorText}`);
-  }
-
-  const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error('OpenAI 未返回有效内容');
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    const match = content.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('OpenAI 返回格式不符合预期');
-    parsed = JSON.parse(match[0]);
-  }
-
-  return AnalysisResultSchema.parse(parsed);
+const decodeDataUrl = (dataUrl) => {
+  const match = /^data:(.+);base64,(.*)$/.exec(dataUrl || '');
+  if (!match) return null;
+  return { mime: match[1], buffer: Buffer.from(match[2], 'base64') };
 };
 
-const buildTree = (rows) => {
-  const map = new Map();
+const getUserFromRequest = async (req) => {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!token) return null;
+  const { data, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !data.user) return null;
+  return data.user;
+};
+
+const ensureTrashFolder = async (userId) => {
+  const { data, error } = await supabaseAdmin
+    .from('tree_nodes')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('type', 'folder')
+    .eq('title', '回收站')
+    .is('parent_id', null)
+    .maybeSingle();
+
+  if (!error && data) return data;
+
+  const { data: created, error: createError } = await supabaseAdmin
+    .from('tree_nodes')
+    .insert({ user_id: userId, title: '回收站', type: 'folder', parent_id: null })
+    .select('*')
+    .single();
+
+  if (createError) throw createError;
+  return created;
+};
+
+const buildTree = (nodes) => {
+  const nodeMap = new Map();
   const roots = [];
 
-  rows.forEach((row) => {
-    map.set(row.id, {
-      id: row.id,
-      title: row.title,
-      type: row.type,
-      problemId: row.problem_id || undefined,
+  nodes.forEach((node) => {
+    nodeMap.set(node.id, {
+      id: node.id,
+      title: node.title,
+      type: node.type,
+      problemId: node.problem_id,
       children: []
     });
   });
 
-  rows.forEach((row) => {
-    const node = map.get(row.id);
-    if (!row.parent_id) {
-      roots.push(node);
-      return;
-    }
-    const parent = map.get(row.parent_id);
-    if (parent) {
-      parent.children.push(node);
+  nodes.forEach((node) => {
+    const mapped = nodeMap.get(node.id);
+    if (node.parent_id && nodeMap.has(node.parent_id)) {
+      nodeMap.get(node.parent_id).children.push(mapped);
     } else {
-      roots.push(node);
+      roots.push(mapped);
     }
   });
 
   return roots;
 };
 
+const getOrCreateFolder = async ({ userId, title, parentId, cache }) => {
+  const cleanName = (title || '').trim();
+  if (!cleanName) throw new Error('文件夹名称不能为空');
+  const cacheKey = `${parentId || 'root'}::${cleanName}`;
+  if (cache && cache.has(cacheKey)) return cache.get(cacheKey);
+
+  const baseQuery = supabaseAdmin
+    .from('tree_nodes')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('type', 'folder')
+    .eq('title', cleanName);
+
+  const { data: existing, error } = parentId
+    ? await baseQuery.eq('parent_id', parentId).maybeSingle()
+    : await baseQuery.is('parent_id', null).maybeSingle();
+
+  if (!error && existing) {
+    if (cache) cache.set(cacheKey, existing);
+    return existing;
+  }
+
+  const { data: created, error: createError } = await supabaseAdmin
+    .from('tree_nodes')
+    .insert({
+      user_id: userId,
+      title: cleanName,
+      type: 'folder',
+      parent_id: parentId || null,
+      sort_order: Date.now()
+    })
+    .select('*')
+    .single();
+
+  if (!createError && created) {
+    if (cache) cache.set(cacheKey, created);
+    return created;
+  }
+
+  const { data: retry } = parentId
+    ? await baseQuery.eq('parent_id', parentId).maybeSingle()
+    : await baseQuery.is('parent_id', null).maybeSingle();
+
+  if (retry) {
+    if (cache) cache.set(cacheKey, retry);
+    return retry;
+  }
+
+  throw createError || new Error('创建文件夹失败');
+};
+
+const classifyQuestions = async ({ items, subject, existingCategories, model }) => {
+  const usedModel = model || OPENAI_MODEL;
+
+  const prompt = [
+    '你是题库分类助手。请按要求返回 JSON。',
+    '对每道题生成：',
+    '1) 一句话总结 summary（<=25字，自由描述，避免固定句式，尽量自然简洁）',
+    '2) mid（中类）',
+    '3) small（细化知识点）',
+    '4) difficulty（难度，只能是 easy / medium / hard）',
+    `big 固定为 "${subject}"。`,
+    existingCategories.length
+      ? `已有中类列表：${existingCategories.join(', ')}。请优先选用；没有合适再新建。`
+      : '暂无已有中类，可自行给出合理中类。',
+    '严格输出 JSON：{"items":[{"summary":"...","mid":"...","small":"...","difficulty":"easy|medium|hard"}]}。',
+    '以下是题目列表：'
+  ].join('\n');
+
+  const questionList = items.map((item, index) => `${index + 1}. ${item.content || ''}`).join('\n');
+
+  const aiResult = await callChatCompletions({
+    model: usedModel,
+    messages: [
+      { role: 'system', content: '你只输出 JSON。' },
+      { role: 'user', content: `${prompt}\n${questionList}` }
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.2
+  });
+
+  if (!aiResult.ok) {
+    throw new Error(aiResult.error || '分类模型请求失败');
+  }
+
+  const content = aiResult.data?.choices?.[0]?.message?.content || '';
+  const parsedJson = parseJsonFromContent(content);
+  if (!parsedJson) {
+    throw new Error(`分类模型返回格式不符合预期（${usedModel}）`);
+  }
+  const parsed = parsedJson;
+  const results = Array.isArray(parsed?.items) ? parsed.items : [];
+  return results.map((item) => {
+    const diff = String(item?.difficulty || '').toLowerCase();
+    const normalizedDifficulty = diff === 'easy' || diff === 'hard' ? diff : 'medium';
+    return {
+      summary: item?.summary || '',
+      mid: item?.mid || '',
+      small: item?.small || '',
+      difficulty: normalizedDifficulty
+    };
+  });
+};
+
+const mapProblem = (row) => ({
+  id: row.id,
+  title: row.title,
+  subject: row.subject,
+  difficulty: row.difficulty,
+  timeAgo: row.time_ago || '',
+  createdAt: row.created_at || '',
+  analysisResult: row.analysis_result || null,
+  tags: Array.isArray(row.tags) ? row.tags : [],
+  description: row.description || ''
+});
+
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
-});
-
-app.get('/api/questions', requireAuth, async (req, res) => {
-  const { data, error } = await supabaseAdmin
-    .from('questions')
-    .select('id,image_url,summary,content,status,created_at')
-    .order('created_at', { ascending: false })
-    .limit(50);
-
-  if (error) {
-    return res.status(500).json({ message: '获取题目失败' });
-  }
-
-  res.json({ questions: data || [] });
-});
-
-app.post('/api/auth/register', async (req, res) => {
-  const { name, email, password } = req.body || {};
-  if (!email || !password) {
-    return res.status(400).json({ message: '邮箱和密码不能为空' });
-  }
-
-  try {
-    const { data: created, error: createError } = await supabaseAdmin.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      user_metadata: { name: name || '' }
-    });
-
-    if (createError) throw createError;
-
-    const { data: sessionData, error: signInError } = await supabaseAnon.auth.signInWithPassword({
-      email,
-      password
-    });
-
-    if (signInError || !sessionData?.session) {
-      return res.status(401).json({ message: '注册成功，但登录失败，请重试登录' });
-    }
-
-    const profile = await ensureProfile(created.user);
-
-    res.json({
-      token: sessionData.session.access_token,
-      profile: {
-        name: profile.name,
-        email: profile.email,
-        avatar: profile.avatar,
-        plan: profile.plan
-      }
-    });
-  } catch (error) {
-    res.status(400).json({ message: error.message || '注册失败' });
-  }
+  res.json({ ok: true });
 });
 
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) {
-    return res.status(400).json({ message: '邮箱和密码不能为空' });
+    return res.status(400).json({ message: '缺少邮箱或密码' });
   }
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error || !data.session) {
+    return res.status(401).json({ message: error?.message || '登录失败' });
+  }
+  const { data: profile } = await supabaseAdmin
+    .from('profiles')
+    .select('*')
+    .eq('id', data.user.id)
+    .single();
 
-  const { data, error } = await supabaseAnon.auth.signInWithPassword({ email, password });
-  if (error || !data?.session) {
-    return res.status(401).json({ message: '账号或密码错误' });
-  }
-
-  try {
-    const profile = await ensureProfile(data.user);
-    res.json({
-      token: data.session.access_token,
-      profile: {
-        name: profile.name,
-        email: profile.email,
-        avatar: profile.avatar,
-        plan: profile.plan
-      }
-    });
-  } catch (err) {
-    res.status(500).json({ message: '获取用户信息失败' });
-  }
+  res.json({ token: data.session.access_token, profile });
 });
 
-app.post('/api/auth/password', requireAuth, async (req, res) => {
+app.post('/api/auth/register', async (req, res) => {
+  const { name, email, password } = req.body || {};
+  if (!name || !email || !password) {
+    return res.status(400).json({ message: '缺少注册信息' });
+  }
+
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: { name }
+    }
+  });
+
+  if (error) {
+    return res.status(400).json({ message: error.message });
+  }
+
+  const userId = data.user?.id;
+  if (userId) {
+    await supabaseAdmin
+      .from('profiles')
+      .upsert({ id: userId, name, email })
+      .select();
+  }
+
+  let token = data.session?.access_token || '';
+  if (!token) {
+    const login = await supabase.auth.signInWithPassword({ email, password });
+    token = login.data.session?.access_token || '';
+  }
+
+  const { data: profile } = userId
+    ? await supabaseAdmin.from('profiles').select('*').eq('id', userId).single()
+    : { data: null };
+
+  res.json({ token, profile });
+});
+
+app.post('/api/auth/change-password', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
   const { currentPassword, newPassword } = req.body || {};
-
   if (!currentPassword || !newPassword) {
-    return res.status(400).json({ message: '当前密码和新密码不能为空' });
+    return res.status(400).json({ message: '缺少当前密码或新密码' });
   }
 
-  if (newPassword.length < 6) {
-    return res.status(400).json({ message: '新密码长度不能少于6位' });
-  }
+  const email = user.email;
+  if (!email) return res.status(400).json({ message: '用户邮箱缺失' });
 
-  const { error: verifyError } = await supabaseAnon.auth.signInWithPassword({
-    email: req.user.email,
+  const { error: verifyError } = await supabase.auth.signInWithPassword({
+    email,
     password: currentPassword
   });
 
   if (verifyError) {
-    return res.status(400).json({ message: '当前密码不正确' });
+    return res.status(401).json({ message: '当前密码不正确' });
   }
 
-  const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(req.user.id, {
+  const { error: updateError } = await supabaseAdmin.auth.updateUserById(user.id, {
     password: newPassword
   });
 
   if (updateError) {
-    return res.status(500).json({ message: '更新密码失败' });
+    return res.status(400).json({ message: updateError.message });
   }
 
-  res.json({ success: true });
+  res.json({ ok: true });
 });
 
-app.get('/api/bootstrap', requireAuth, async (req, res) => {
-  const userId = req.user.id;
+app.get('/api/bootstrap', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
 
   try {
-    const profile = await ensureProfile(req.user);
+    await ensureTrashFolder(user.id);
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('*')
+      .eq('id', user.id)
+      .single();
 
-    const { data: problems, error: problemsError } = await supabaseAdmin
+    const { data: problems } = await supabaseAdmin
       .from('problems')
-      .select('id,title,subject,difficulty,time_ago,tags,description,created_at')
-      .eq('user_id', userId)
+      .select('*')
+      .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
-    if (problemsError) throw problemsError;
+    const { data: treeNodes } = await supabaseAdmin
+      .from('tree_nodes')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('sort_order', { ascending: true });
 
-    const { data: favoriteRows, error: favoritesError } = await supabaseAdmin
+    const { data: favorites } = await supabaseAdmin
       .from('favorites')
       .select('problem_id')
-      .eq('user_id', userId);
-
-    if (favoritesError) throw favoritesError;
-
-    const { data: treeRows, error: treeError } = await supabaseAdmin
-      .from('tree_nodes')
-      .select('id,title,type,parent_id,problem_id,sort_order,created_at')
-      .eq('user_id', userId)
-      .order('sort_order', { ascending: true })
-      .order('created_at', { ascending: true });
-
-    if (treeError) throw treeError;
+      .eq('user_id', user.id);
 
     res.json({
-      profile: {
-        name: profile.name,
-        email: profile.email,
-        avatar: profile.avatar,
-        plan: profile.plan
-      },
-      problems: (problems || []).map(normalizeProblem),
-      favorites: (favoriteRows || []).map(row => row.problem_id),
-      tree: buildTree(treeRows || [])
+      profile,
+      problems: (problems || []).map(mapProblem),
+      tree: buildTree(treeNodes || []),
+      favorites: (favorites || []).map((fav) => fav.problem_id)
     });
   } catch (error) {
-    res.status(500).json({ message: error.message || '初始化数据失败' });
+    res.status(500).json({ message: '加载失败' });
   }
 });
 
-app.post('/api/favorites/toggle', requireAuth, async (req, res) => {
-  const { problemId } = req.body || {};
-  if (!problemId) {
-    return res.status(400).json({ message: '缺少题目ID' });
-  }
+app.post('/api/profile', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
 
-  const userId = req.user.id;
+  const update = req.body || {};
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .update(update)
+    .eq('id', user.id)
+    .select('*')
+    .single();
+
+  if (error) {
+    return res.status(400).json({ message: error.message });
+  }
+  res.json({ profile: data });
+});
+
+app.post('/api/favorites/toggle', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { problemId } = req.body || {};
+  if (!problemId) return res.status(400).json({ message: '缺少题目 ID' });
+
   const { data: existing } = await supabaseAdmin
     .from('favorites')
-    .select('problem_id')
-    .eq('user_id', userId)
+    .select('*')
+    .eq('user_id', user.id)
     .eq('problem_id', problemId)
     .maybeSingle();
 
@@ -649,548 +604,1215 @@ app.post('/api/favorites/toggle', requireAuth, async (req, res) => {
     await supabaseAdmin
       .from('favorites')
       .delete()
-      .eq('user_id', userId)
+      .eq('user_id', user.id)
       .eq('problem_id', problemId);
   } else {
     await supabaseAdmin
       .from('favorites')
-      .insert({ user_id: userId, problem_id: problemId });
+      .insert({ user_id: user.id, problem_id: problemId });
   }
 
-  const { data: favoriteRows } = await supabaseAdmin
+  const { data: favorites } = await supabaseAdmin
     .from('favorites')
     .select('problem_id')
-    .eq('user_id', userId);
+    .eq('user_id', user.id);
 
-  res.json({ favorites: (favoriteRows || []).map(row => row.problem_id) });
+  res.json({ favorites: (favorites || []).map((fav) => fav.problem_id) });
 });
 
-app.post('/api/folders', requireAuth, async (req, res) => {
+app.post('/api/folders', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
   const { title, parentId } = req.body || {};
-  if (!title || !title.trim()) {
-    return res.status(400).json({ message: '文件夹名称不能为空' });
-  }
+  if (!title) return res.status(400).json({ message: '缺少文件夹名称' });
 
   const { data, error } = await supabaseAdmin
     .from('tree_nodes')
-    .insert({
-      user_id: req.user.id,
-      title: title.trim(),
-      type: 'folder',
-      parent_id: parentId || null,
-      sort_order: Date.now()
-    })
-    .select('id,title,type,parent_id')
+    .insert({ user_id: user.id, title, type: 'folder', parent_id: parentId || null })
+    .select('*')
     .single();
 
-  if (error) {
-    return res.status(500).json({ message: '创建文件夹失败' });
-  }
-
-  res.json({
-    node: {
-      id: data.id,
-      title: data.title,
-      type: 'folder',
-      children: []
-    }
-  });
+  if (error) return res.status(400).json({ message: error.message });
+  res.json({ node: {
+    id: data.id,
+    title: data.title,
+    type: data.type,
+    children: []
+  }});
 });
 
-app.delete('/api/nodes/:id', requireAuth, async (req, res) => {
+app.delete('/api/nodes/:id', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const trash = await ensureTrashFolder(user.id);
   const nodeId = req.params.id;
-  const userId = req.user.id;
-
-  const { data: nodes, error } = await supabaseAdmin
+  const { error } = await supabaseAdmin
     .from('tree_nodes')
-    .select('id,parent_id,problem_id,type')
-    .eq('user_id', userId);
+    .update({ parent_id: trash.id })
+    .eq('id', nodeId)
+    .eq('user_id', user.id);
 
-  if (error) {
-    return res.status(500).json({ message: '删除失败' });
+  if (error) return res.status(400).json({ message: error.message });
+  res.json({ ok: true });
+});
+
+app.post('/api/nodes/batch-delete', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { nodeIds } = req.body || {};
+  if (!Array.isArray(nodeIds) || nodeIds.length === 0) {
+    return res.status(400).json({ message: '缺少节点' });
   }
+  const trash = await ensureTrashFolder(user.id);
+  const { error } = await supabaseAdmin
+    .from('tree_nodes')
+    .update({ parent_id: trash.id })
+    .in('id', nodeIds)
+    .eq('user_id', user.id);
+  if (error) return res.status(400).json({ message: error.message });
+  res.json({ ok: true });
+});
 
-  const childrenMap = new Map();
-  nodes.forEach((node) => {
-    if (!childrenMap.has(node.parent_id)) {
-      childrenMap.set(node.parent_id, []);
-    }
-    childrenMap.get(node.parent_id).push(node.id);
-  });
+app.post('/api/nodes/restore', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
 
-  const toDelete = [];
-  const stack = [nodeId];
-  while (stack.length) {
-    const current = stack.pop();
-    if (!current) continue;
-    toDelete.push(current);
-    const children = childrenMap.get(current) || [];
-    children.forEach(childId => stack.push(childId));
-  }
+  const { nodeId } = req.body || {};
+  if (!nodeId) return res.status(400).json({ message: '缺少节点' });
 
-  const deletedProblemIds = nodes
-    .filter(node => toDelete.includes(node.id) && node.type === 'file' && node.problem_id)
-    .map(node => node.problem_id);
+  await supabaseAdmin
+    .from('tree_nodes')
+    .update({ parent_id: null })
+    .eq('id', nodeId)
+    .eq('user_id', user.id);
 
-  if (toDelete.length > 0) {
-    await supabaseAdmin
-      .from('tree_nodes')
-      .delete()
-      .in('id', toDelete)
-      .eq('user_id', userId);
-  }
+  res.json({ ok: true });
+});
 
-  if (deletedProblemIds.length > 0) {
-    await supabaseAdmin
-      .from('problems')
-      .delete()
-      .in('id', deletedProblemIds)
-      .eq('user_id', userId);
+app.post('/api/nodes/hard-delete', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
 
+  const { nodeId } = req.body || {};
+  if (!nodeId) return res.status(400).json({ message: '缺少节点' });
+
+  const { data: node } = await supabaseAdmin
+    .from('tree_nodes')
+    .select('type, problem_id')
+    .eq('id', nodeId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  await supabaseAdmin
+    .from('tree_nodes')
+    .delete()
+    .eq('id', nodeId)
+    .eq('user_id', user.id);
+
+  if (node?.problem_id) {
     await supabaseAdmin
       .from('favorites')
       .delete()
-      .eq('user_id', userId)
-      .in('problem_id', deletedProblemIds);
+      .eq('user_id', user.id)
+      .eq('problem_id', node.problem_id);
+  }
+  if (node?.type === 'file' && node?.problem_id) {
+    await supabaseAdmin
+      .from('problems')
+      .delete()
+      .eq('user_id', user.id)
+      .eq('id', node.problem_id);
   }
 
-  res.json({ deletedIds: toDelete, deletedProblemIds });
+  res.json({ ok: true });
 });
 
-app.delete('/api/problems/:id', requireAuth, async (req, res) => {
-  const problemId = req.params.id;
-  const userId = req.user.id;
+app.post('/api/nodes/move-problem', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { problemId, targetFolderId } = req.body || {};
+  if (!problemId) return res.status(400).json({ message: '缺少题目 ID' });
+
+  if (targetFolderId) {
+    const { data: folder } = await supabaseAdmin
+      .from('tree_nodes')
+      .select('id')
+      .eq('id', targetFolderId)
+      .eq('user_id', user.id)
+      .eq('type', 'folder')
+      .maybeSingle();
+    if (!folder) return res.status(400).json({ message: '目标文件夹不存在' });
+  }
+
+  const { error } = await supabaseAdmin
+    .from('tree_nodes')
+    .update({ parent_id: targetFolderId || null })
+    .eq('user_id', user.id)
+    .eq('problem_id', problemId);
+
+  if (error) return res.status(400).json({ message: error.message });
+  res.json({ ok: true });
+});
+
+app.post('/api/nodes/move-node', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { nodeId, targetFolderId } = req.body || {};
+  if (!nodeId) return res.status(400).json({ message: '缺少节点 ID' });
+  if (targetFolderId && targetFolderId === nodeId) {
+    return res.status(400).json({ message: '不能移动到自身' });
+  }
+
+  if (targetFolderId) {
+    const { data: folder } = await supabaseAdmin
+      .from('tree_nodes')
+      .select('id')
+      .eq('id', targetFolderId)
+      .eq('user_id', user.id)
+      .eq('type', 'folder')
+      .maybeSingle();
+    if (!folder) return res.status(400).json({ message: '目标文件夹不存在' });
+  }
+
+  const { error } = await supabaseAdmin
+    .from('tree_nodes')
+    .update({ parent_id: targetFolderId || null })
+    .eq('user_id', user.id)
+    .eq('id', nodeId);
+
+  if (error) return res.status(400).json({ message: error.message });
+  res.json({ ok: true });
+});
+
+app.post('/api/nodes/reorder', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { orderedIds } = req.body || {};
+  if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+    return res.status(400).json({ message: '缺少排序列表' });
+  }
+
+  const { data: nodes } = await supabaseAdmin
+    .from('tree_nodes')
+    .select('id')
+    .eq('user_id', user.id)
+    .in('id', orderedIds);
+
+  if (!nodes || nodes.length !== orderedIds.length) {
+    return res.status(400).json({ message: '包含无效节点' });
+  }
+
+  const base = Date.now();
+  const updates = orderedIds.map((id, idx) => (
+    supabaseAdmin
+      .from('tree_nodes')
+      .update({ sort_order: base + idx })
+      .eq('user_id', user.id)
+      .eq('id', id)
+  ));
+
+  const results = await Promise.all(updates);
+  const failed = results.find((r) => r.error);
+  if (failed?.error) return res.status(400).json({ message: failed.error.message });
+
+  res.json({ ok: true });
+});
+
+app.delete('/api/problems/:id', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  await supabaseAdmin
+    .from('tree_nodes')
+    .delete()
+    .eq('user_id', user.id)
+    .eq('problem_id', req.params.id);
+
+  await supabaseAdmin
+    .from('favorites')
+    .delete()
+    .eq('user_id', user.id)
+    .eq('problem_id', req.params.id);
 
   await supabaseAdmin
     .from('problems')
     .delete()
-    .eq('id', problemId)
-    .eq('user_id', userId);
+    .eq('id', req.params.id)
+    .eq('user_id', user.id);
 
-  await supabaseAdmin
-    .from('tree_nodes')
-    .delete()
-    .eq('user_id', userId)
-    .eq('problem_id', problemId);
+  res.json({ ok: true });
+});
+
+app.post('/api/problems/batch-delete', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { problemIds } = req.body || {};
+  if (!Array.isArray(problemIds) || problemIds.length === 0) {
+    return res.status(400).json({ message: '缺少题目' });
+  }
 
   await supabaseAdmin
     .from('favorites')
     .delete()
-    .eq('user_id', userId)
-    .eq('problem_id', problemId);
+    .in('problem_id', problemIds)
+    .eq('user_id', user.id);
 
-  res.json({ deletedId: problemId });
-});
-
-app.post('/api/problems/batch-delete', requireAuth, async (req, res) => {
-  const { problemIds } = req.body || {};
-  if (!Array.isArray(problemIds) || problemIds.length === 0) {
-    return res.status(400).json({ message: '缺少题目ID列表' });
-  }
+  await supabaseAdmin
+    .from('tree_nodes')
+    .delete()
+    .in('problem_id', problemIds)
+    .eq('user_id', user.id);
 
   await supabaseAdmin
     .from('problems')
     .delete()
     .in('id', problemIds)
-    .eq('user_id', req.user.id);
+    .eq('user_id', user.id);
 
-  await supabaseAdmin
-    .from('tree_nodes')
-    .delete()
-    .eq('user_id', req.user.id)
-    .in('problem_id', problemIds);
-
-  await supabaseAdmin
-    .from('favorites')
-    .delete()
-    .eq('user_id', req.user.id)
-    .in('problem_id', problemIds);
-
-  res.json({ deletedProblemIds: problemIds });
+  res.json({ ok: true });
 });
 
-app.post('/api/profile', requireAuth, async (req, res) => {
-  const updates = {};
-  const fields = ['name', 'email', 'avatar', 'plan'];
-  fields.forEach((field) => {
-    if (req.body && req.body[field] !== undefined) {
-      updates[field] = req.body[field];
-    }
-  });
+app.get('/api/questions', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
 
   const { data, error } = await supabaseAdmin
-    .from('profiles')
-    .upsert({
-      id: req.user.id,
-      ...updates,
-      updated_at: new Date().toISOString()
-    })
-    .select('id,name,email,avatar,plan')
-    .single();
-
-  if (error) {
-    return res.status(500).json({ message: '更新用户资料失败' });
-  }
-
-  res.json({
-    profile: {
-      name: data.name,
-      email: data.email,
-      avatar: data.avatar,
-      plan: data.plan
-    }
-  });
-});
-
-app.post('/api/avatar', requireAuth, async (req, res) => {
-  const { dataUrl } = req.body || {};
-  const parsed = parseDataUrl(dataUrl);
-  if (!parsed) {
-    return res.status(400).json({ message: '头像格式不正确' });
-  }
-
-  const buffer = Buffer.from(parsed.data, 'base64');
-  const extension = getExtensionFromMime(parsed.mime);
-  const path = `${req.user.id}/${Date.now()}.${extension}`;
-
-  const { error: uploadError } = await supabaseAdmin
-    .storage
-    .from('avatars')
-    .upload(path, buffer, {
-      contentType: parsed.mime,
-      upsert: true
-    });
-
-  if (uploadError) {
-    return res.status(500).json({ message: '上传头像失败' });
-  }
-
-  const { data: publicData } = supabaseAdmin
-    .storage
-    .from('avatars')
-    .getPublicUrl(path);
-
-  const avatarUrl = publicData?.publicUrl;
-  if (!avatarUrl) {
-    return res.status(500).json({ message: '获取头像地址失败' });
-  }
-
-  const { data: profile, error: profileError } = await supabaseAdmin
-    .from('profiles')
-    .upsert({
-      id: req.user.id,
-      avatar: avatarUrl,
-      updated_at: new Date().toISOString()
-    })
-    .select('name,email,avatar,plan')
-    .single();
-
-  if (profileError) {
-    return res.status(500).json({ message: '更新头像失败' });
-  }
-
-  res.json({
-    avatarUrl,
-    profile: {
-      name: profile.name,
-      email: profile.email,
-      avatar: profile.avatar,
-      plan: profile.plan
-    }
-  });
-});
-
-app.post('/api/nodes/batch-delete', requireAuth, async (req, res) => {
-  const { nodeIds } = req.body || {};
-  if (!Array.isArray(nodeIds) || nodeIds.length === 0) {
-    return res.status(400).json({ message: '缺少节点ID列表' });
-  }
-
-  const { data: nodes, error } = await supabaseAdmin
-    .from('tree_nodes')
-    .select('id,parent_id,problem_id,type')
-    .eq('user_id', req.user.id);
-
-  if (error) {
-    return res.status(500).json({ message: '删除失败' });
-  }
-
-  const childrenMap = new Map();
-  nodes.forEach((node) => {
-    if (!childrenMap.has(node.parent_id)) {
-      childrenMap.set(node.parent_id, []);
-    }
-    childrenMap.get(node.parent_id).push(node.id);
-  });
-
-  const toDelete = [];
-  const stack = [...nodeIds];
-  while (stack.length) {
-    const current = stack.pop();
-    if (!current || toDelete.includes(current)) continue;
-    toDelete.push(current);
-    const children = childrenMap.get(current) || [];
-    children.forEach(childId => stack.push(childId));
-  }
-
-  const deletedProblemIds = nodes
-    .filter(node => toDelete.includes(node.id) && node.type === 'file' && node.problem_id)
-    .map(node => node.problem_id);
-
-  if (toDelete.length > 0) {
-    await supabaseAdmin
-      .from('tree_nodes')
-      .delete()
-      .in('id', toDelete)
-      .eq('user_id', req.user.id);
-  }
-
-  if (deletedProblemIds.length > 0) {
-    await supabaseAdmin
-      .from('problems')
-      .delete()
-      .in('id', deletedProblemIds)
-      .eq('user_id', req.user.id);
-
-    await supabaseAdmin
-      .from('favorites')
-      .delete()
-      .eq('user_id', req.user.id)
-      .in('problem_id', deletedProblemIds);
-  }
-
-  res.json({ deletedIds: toDelete, deletedProblemIds });
-});
-
-app.post('/api/import-question', requireAuth, async (req, res) => {
-  const { dataUrl } = req.body || {};
-  const parsed = parseDataUrl(dataUrl);
-  if (!parsed) {
-    return res.status(400).json({ message: '图片格式不正确' });
-  }
-
-  const buffer = Buffer.from(parsed.data, 'base64');
-  const extension = getExtensionFromMime(parsed.mime);
-  const path = `${req.user.id}/${Date.now()}.${extension}`;
-
-  const { error: uploadError } = await supabaseAdmin
-    .storage
-    .from('question_images')
-    .upload(path, buffer, {
-      contentType: parsed.mime,
-      upsert: true
-    });
-
-  if (uploadError) {
-    return res.status(500).json({ message: '图片上传失败' });
-  }
-
-  const { data: publicData } = supabaseAdmin
-    .storage
-    .from('question_images')
-    .getPublicUrl(path);
-
-  const imageUrl = publicData?.publicUrl;
-  if (!imageUrl) {
-    return res.status(500).json({ message: '获取图片链接失败' });
-  }
-
-  const { data: inserted, error: insertError } = await supabaseAdmin
     .from('questions')
-    .insert({
-      image_url: imageUrl,
-      summary: '新导入题目 (待AI分析)',
-      status: 'unclassified',
-      created_at: new Date().toISOString()
-    })
-    .select('id,image_url,summary,status,created_at')
-    .single();
+    .select('*')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+    .limit(20);
 
-  if (insertError || !inserted) {
-    return res.status(500).json({ message: '写入题目失败' });
+  if (error && error.code === '42P01') {
+    return res.json({ questions: [] });
   }
-
-  res.json({ question: inserted });
+  if (error) return res.status(400).json({ message: error.message });
+  res.json({ questions: data || [] });
 });
 
-app.post('/api/import-questions/analyze', requireAuth, async (req, res) => {
-  const { dataUrl } = req.body || {};
-  const parsed = parseDataUrl(dataUrl);
-  if (!parsed) {
-    return res.status(400).json({ message: '图片格式不正确' });
+app.post('/api/questions/batch', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { imageUrl, items, parentFolderId, subject, tags, forceParentOnly, classifyModel } = req.body || {};
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ message: '题目不能为空' });
   }
+
+  const subjectText = subject || '未分类';
+  const normalizedTags = Array.isArray(tags)
+    ? tags
+    : tags && typeof tags === 'object'
+      ? [tags.big, tags.mid, tags.small].filter(Boolean)
+      : [];
+
+  const { data: problemsForTags } = await supabaseAdmin
+    .from('problems')
+    .select('tags')
+    .eq('user_id', user.id)
+    .eq('subject', subjectText);
+
+  const existingCategories = Array.from(new Set((problemsForTags || [])
+    .map((row) => {
+      if (Array.isArray(row.tags)) return row.tags[1];
+      if (row.tags && typeof row.tags === 'object') return row.tags.mid;
+      return null;
+    })
+    .filter(Boolean)));
+
+  let aiResults = [];
+  if (!forceParentOnly) {
+    try {
+      aiResults = await classifyQuestions({ items, subject: subjectText, existingCategories, model: classifyModel });
+    } catch (error) {
+      aiResults = [];
+    }
+  }
+
+  const normalizedAiResults = await Promise.all(
+    (aiResults || []).map(async (item) => {
+      const mid = await normalizeTagWithAI({ subject: subjectText, aiProposedTag: item?.mid || '' });
+      const small = await normalizeTagWithAI({ subject: subjectText, aiProposedTag: item?.small || '' });
+      return { ...item, mid, small };
+    })
+  );
+
+  const sanitizeTitle = (value) => {
+    const trimmed = String(value || '').trim();
+    return trimmed.replace(/[。．.!！?？、]+$/g, '').trim();
+  };
+
+  const problemRows = items.map((item, idx) => ({
+    user_id: user.id,
+    title: sanitizeTitle(
+      item.title
+        || normalizedAiResults[idx]?.summary?.trim()
+        || (item.content || '').slice(0, 25)
+        || '新导入题目'
+    ),
+    subject: subjectText,
+    difficulty: item.difficulty || normalizedAiResults[idx]?.difficulty || 'medium',
+    time_ago: '刚刚',
+    tags: item.tags
+      ? item.tags
+      : normalizedTags.length
+        ? normalizedTags
+        : forceParentOnly
+          ? [subjectText].filter(Boolean)
+          : [subjectText, normalizedAiResults[idx]?.mid, normalizedAiResults[idx]?.small].filter(Boolean),
+    description: item.content || ''
+  }));
+
+  const { data: inserted, error } = await supabaseAdmin
+    .from('problems')
+    .insert(problemRows)
+    .select('*');
+
+  if (error) return res.status(400).json({ message: error.message });
+
+  const folderCache = new Map();
+  const fileNodes = [];
+  for (let idx = 0; idx < (inserted || []).length; idx += 1) {
+    const row = inserted[idx];
+    const rowTags = Array.isArray(row.tags) ? row.tags : [];
+    const mid = rowTags[1];
+    const small = rowTags[2];
+
+    let targetParentId = parentFolderId || null;
+    if (!forceParentOnly) {
+      if (mid) {
+        const midFolder = await getOrCreateFolder({
+          userId: user.id,
+          title: mid,
+          parentId: targetParentId,
+          cache: folderCache
+        });
+        targetParentId = midFolder.id;
+      }
+      if (small) {
+        const smallFolder = await getOrCreateFolder({
+          userId: user.id,
+          title: small,
+          parentId: targetParentId,
+          cache: folderCache
+        });
+        targetParentId = smallFolder.id;
+      }
+    }
+
+    fileNodes.push({
+      user_id: user.id,
+      title: row.title,
+      type: 'file',
+      parent_id: targetParentId,
+      problem_id: row.id,
+      sort_order: Date.now() + idx
+    });
+  }
+
+  await supabaseAdmin.from('tree_nodes').insert(fileNodes);
+
+  res.json({ ok: true, problems: (inserted || []).map(mapProblem) });
+});
+
+app.post('/api/import/analyze', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { dataUrl } = req.body || {};
+  const decoded = decodeDataUrl(dataUrl);
+  if (!decoded) return res.status(400).json({ message: '图片解析失败' });
+
+  const extension = decoded.mime.split('/')[1] || 'png';
+  const objectPath = `${user.id}/${Date.now()}.${extension}`;
+
+  const upload = await supabaseAdmin
+    .storage
+    .from('question_images')
+    .upload(objectPath, decoded.buffer, { contentType: decoded.mime });
+
+  if (upload.error) {
+    return res.status(400).json({ message: upload.error.message });
+  }
+
+  const { data: publicUrlData } = supabaseAdmin
+    .storage
+    .from('question_images')
+    .getPublicUrl(objectPath);
+
+  const imageUrl = publicUrlData.publicUrl;
+
+  if (!DASHSCOPE_API_KEY) {
+    return res.status(400).json({ message: '缺少 DASHSCOPE_API_KEY' });
+  }
+
+  const prompt = [
+    '你是高精度数学OCR与重述引擎。',
+    '任务：理解图像中的题目，先识别原始文本，再将每道题“完整复述”为可直接渲染的规范文本。',
+    '必须返回严格 JSON，格式如下：',
+    '{"items":[{"raw_text":"原始题干文本","latex_text":"可渲染文本","options":["A...","B..."]}],"handwritten":false,"reason":""}',
+    '规则：',
+    '1) raw_text 保持识别到的原始文本，不做格式修饰。',
+    '2) latex_text 是“复述后”的题目文本，要求语义一致但表达更清晰、可渲染：行内 $...$，块级 $$...$$。',
+    '3) 任何 \\begin{...}...\\end{...} 必须整体包在 $$...$$ 中。',
+    '4) 若题目是选择题，options 必须给出；同时 latex_text 中要包含所有选项（每行一个）。',
+    '5) 禁止多余的 $，不得输出 $$$ 或 $$ $ 之类错误组合。',
+    '6) 只输出 JSON，不要添加解释、不要代码块。',
+    'items 数组中每个元素对应一道题，禁止合并成一条。',
+    '输出必须以 { 开头，以 } 结束；不得包含多余字符。'
+  ].join('\n');
+
+  const aiResponse = await fetch('https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${DASHSCOPE_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: 'qwen-vl-max',
+      input: {
+        messages: [
+          { role: 'system', content: [{ text: '你只输出 JSON。' }] },
+          { role: 'user', content: [{ image: imageUrl }, { text: prompt }] }
+        ]
+      },
+      parameters: {
+        temperature: 0.0
+      }
+    })
+  });
+
+  const aiJson = await aiResponse.json();
+  if (!aiResponse.ok) {
+    const message = aiJson?.message || aiJson?.error?.message || '识别失败，请稍后再试';
+    return res.status(400).json({ message });
+  }
+  const dashContent = aiJson?.output?.choices?.[0]?.message?.content;
+  const content = Array.isArray(dashContent)
+    ? dashContent.map((part) => part.text || '').join('')
+    : (typeof dashContent === 'string' ? dashContent : '');
+  if (!content) {
+    return res.status(400).json({
+      message: '识别结果为空，可能是图片不清晰或模型不支持该图片格式'
+    });
+  }
+  let candidates = [];
+  let parsedJson = null;
+  try {
+    parsedJson = parseJsonFromContent(content);
+    let rawCandidates = [];
+    if (!parsedJson) {
+      rawCandidates = [{ content }];
+    } else {
+      const parsed = parsedJson;
+      if (Array.isArray(parsed)) {
+        rawCandidates = parsed;
+      } else if (parsed && typeof parsed === 'object') {
+        if (parsed.handwritten === true) {
+          return res.status(400).json({ message: parsed.reason || '检测到手写题目，已跳过识别' });
+        }
+        if (Array.isArray(parsed.items)) rawCandidates = parsed.items;
+        else if (Array.isArray(parsed.questions)) rawCandidates = parsed.questions;
+        else if (Array.isArray(parsed.data)) rawCandidates = parsed.data;
+        else if (typeof parsed.content === 'string') rawCandidates = [{ content: parsed.content }];
+        else if (typeof parsed.text === 'string') rawCandidates = [{ content: parsed.text }];
+      } else if (typeof parsed === 'string') {
+        rawCandidates = [{ content: parsed }];
+      }
+    }
+
+    candidates = rawCandidates
+      .map((item) => {
+        if (typeof item === 'string') return { content: item };
+        if (item && typeof item === 'object') {
+          const baseContent = item.latex_text || item.content || item.question || item.raw_text || item.text || item.value || item.title || '';
+          const optionList = Array.isArray(item.options)
+            ? item.options
+            : Array.isArray(item.choices)
+              ? item.choices
+              : [];
+          const optionsText = optionList
+            .map((opt, index) => {
+              if (typeof opt === 'string') return opt;
+              if (opt && typeof opt === 'object') {
+                return opt.text || opt.content || opt.label || opt.value || `选项${index + 1}`;
+              }
+              return '';
+            })
+            .filter((opt) => opt && String(opt).trim());
+          const mergedContent = optionsText.length
+            ? [baseContent, ...optionsText].filter(Boolean).join('\n')
+            : baseContent;
+          return { content: mergedContent };
+        }
+        return { content: '' };
+      })
+      .filter((item) => item.content && item.content.trim());
+
+    if (candidates.length === 1) {
+      const text = candidates[0].content;
+      const parts = text
+        .split(/\n(?=(?:\d+[\.\、\)]|（\d+）|[一二三四五六七八九十]+[、\)]))/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+      if (parts.length > 1) {
+        candidates = parts.map((content) => ({ content }));
+      }
+    }
+  } catch (error) {
+    candidates = [{ content }];
+  }
+
+  if (!parsedJson) {
+    const strictPrompt = [
+      '只允许输出严格 JSON，不要任何解释，不要代码块。',
+      '必须输出：{"items":[{"raw_text":"...","latex_text":"...","options":["A...","B..."]}]}。',
+      '如果检测到手写题目，请输出：{"items":[],"handwritten":true,"reason":"手写题目暂不支持"}。',
+      '输出必须以 { 开头，以 } 结束。',
+      '如果无法识别选项，options 返回空数组。',
+    ].join('\n');
+    const retry = await fetch('https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${DASHSCOPE_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'qwen-vl-max',
+        input: {
+          messages: [
+            { role: 'system', content: [{ text: '你只输出 JSON。' }] },
+            { role: 'user', content: [{ image: imageUrl }, { text: strictPrompt }] }
+          ]
+        },
+        parameters: { temperature: 0.0 }
+      })
+    });
+    const retryJson = await retry.json();
+    const retryContent = Array.isArray(retryJson?.output?.choices?.[0]?.message?.content)
+      ? retryJson.output.choices[0].message.content.map((part) => part.text || '').join('')
+      : (typeof retryJson?.output?.choices?.[0]?.message?.content === 'string'
+        ? retryJson.output.choices[0].message.content
+        : '');
+    const retryParsed = parseJsonFromContent(retryContent || '');
+    if (retryParsed && !Array.isArray(retryParsed)) {
+      if (retryParsed.handwritten === true) {
+        return res.status(400).json({ message: retryParsed.reason || '检测到手写题目，已跳过识别' });
+      }
+      const items = Array.isArray(retryParsed.items) ? retryParsed.items : [];
+      if (items.length > 0) {
+        candidates = items.map((item) => {
+          const baseContent = item.latex_text || item.raw_text || item.content || '';
+          const optionList = Array.isArray(item.options) ? item.options : [];
+          const merged = optionList.length ? [baseContent, ...optionList].filter(Boolean).join('\n') : baseContent;
+          return { content: merged };
+        }).filter((item) => item.content && item.content.trim());
+      }
+    }
+  }
+
+  const sanitizeMathDelimiters = (value) => {
+    let next = value || '';
+    next = next.replace(/\${3,}/g, '$$');
+    next = next.replace(/\$\s*\$/g, '$$');
+    next = next.replace(/\$\s*\$\$/g, '$$');
+    next = next.replace(/\$\$\s*\$/g, '$$');
+    return next;
+  };
+
+  const normalizeOcrText = async (text) => {
+    const trimmed = (text || '').trim();
+    if (!trimmed) return '';
+    const needsNormalization = /\\|$$|\$|\\begin\{|\\left|\\right/.test(trimmed);
+    if (!needsNormalization) return trimmed;
+    const prompt = [
+      '你是“数学OCR清洗器”，必须输出与原题完全一致的可渲染纯文本。',
+      '只允许输出清洗后的题干文本；不得包含任何解释或代码块。',
+      '硬性规则：',
+      '1) 所有数学表达必须有明确定界符：行内用 $...$，块级用 $$...$$。',
+      '2) \\begin{...}...\\end{...} 必须整体包在 $$...$$ 中。',
+      '3) 禁止出现多余的 $（例如 $$$ 或 $$ $），必须纠正为合法的 $ 或 $$。',
+      '4) \\left ... \\right 必须包在同一个 $...$ 中。',
+      '5) 中文与公式之间必须加空格。',
+      '6) 保留题干与选项，保持原意，不补充不删改。',
+      '7) 输出必须是一段纯文本。',
+      '输入：',
+      trimmed
+    ].join('\n');
+    const aiResult = await callChatCompletions({
+      model: 'openai/gpt-4o-mini',
+      messages: [
+        { role: 'system', content: '你只输出清洗后的纯文本。' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.0
+    });
+    if (!aiResult.ok) return trimmed;
+    const cleaned = String(aiResult.data?.choices?.[0]?.message?.content || '').trim();
+    if (!cleaned || cleaned.length < 3) return trimmed;
+    if (cleaned.startsWith('{') || cleaned.startsWith('[') || cleaned.includes('```')) {
+      return trimmed;
+    }
+    const normalized = sanitizeMathDelimiters(cleaned);
+    return normalized || trimmed;
+  };
 
   try {
-    const buffer = Buffer.from(parsed.data, 'base64');
-    const extension = getExtensionFromMime(parsed.mime);
-    const path = `${req.user.id}/${Date.now()}.${extension}`;
-
-    const { error: uploadError } = await supabaseAdmin
-      .storage
-      .from('question_images')
-      .upload(path, buffer, {
-        contentType: parsed.mime,
-        upsert: true
-      });
-
-    if (uploadError) {
-      return res.status(500).json({ message: '图片上传失败' });
-    }
-
-    const { data: publicData } = supabaseAdmin
-      .storage
-      .from('question_images')
-      .getPublicUrl(path);
-
-    const imageUrl = publicData?.publicUrl;
-    if (!imageUrl) {
-      return res.status(500).json({ message: '获取图片链接失败' });
-    }
-
-    const candidates = await callOpenAIForQuestions(imageUrl);
-
-    res.json({ imageUrl, candidates });
-  } catch (error) {
-    res.status(500).json({ message: error.message || '分析失败' });
+    candidates = await Promise.all(
+      candidates.map(async (item) => ({
+        ...item,
+        content: await normalizeOcrText(item.content)
+      }))
+    );
+  } catch {
+    // fallback to original candidates
   }
+
+  if (candidates.length === 0) {
+    return res.status(400).json({
+      message: '识别完成但未解析出题目，可能是图片模糊/遮挡/非题目区域'
+    });
+  }
+
+  res.json({ imageUrl, candidates });
 });
 
-app.post('/api/analyze-question', requireAuth, async (req, res) => {
-  const { questionText } = req.body || {};
-  if (!questionText || typeof questionText !== 'string' || questionText.trim().length === 0) {
+app.post('/api/analysis', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { questionText, problemId, model } = req.body || {};
+  if (!questionText) {
     return res.status(400).json({ message: '题目文本不能为空' });
   }
 
+  const systemPrompt = ANALYSIS_SYSTEM_PROMPT;
+  const usedModel = model || OPENAI_MODEL;
+  const aiResult = await callChatCompletions({
+    model: usedModel,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: questionText }
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.2
+  });
+
+  if (!aiResult.ok) {
+    return res.status(400).json({ message: aiResult.error });
+  }
+
+  const content = aiResult.data?.choices?.[0]?.message?.content || '';
+
+  let parsed;
   try {
-    const result = await callOpenAIForAnalysis(questionText.trim());
-    res.json({ result });
+    const parsedJson = parseJsonFromContent(content);
+    if (!parsedJson) throw new Error('invalid_json');
+    parsed = AnalysisResultSchema.parse(parsedJson);
   } catch (error) {
-    res.status(500).json({ message: error.message || '分析失败' });
-  }
-});
-
-app.post('/api/questions/batch', requireAuth, async (req, res) => {
-  const { imageUrl, items, parentFolderId } = req.body || {};
-  if (!imageUrl || !Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ message: '题目内容不能为空' });
+    return res.status(400).json({ message: `模型返回格式不符合预期（${usedModel}）` });
   }
 
-  const rows = items
-    .map((item) => ({
-      image_url: imageUrl,
-      content: String(item.content || '').trim()
-    }))
-    .filter((item) => item.content.length > 0);
-
-  if (rows.length === 0) {
-    return res.status(400).json({ message: '题目内容不能为空' });
-  }
-
-  const insertedQuestions = [];
-
-  for (const row of rows) {
-    try {
-      const analysis = await callOpenAIForAnalysis(row.content);
-      const summary = analysis.essence_one_sentence;
-      const status = 'pending_analysis';
-
-      const { data: questionRow, error: questionError } = await supabaseAdmin
-        .from('questions')
-        .insert({
-          image_url: imageUrl,
-          content: row.content,
-          summary,
-          status,
-          created_at: new Date().toISOString()
-        })
-        .select('id,image_url,content,summary,status,created_at')
-        .single();
-
-      if (questionError || !questionRow) {
-        throw questionError || new Error('写入 questions 失败');
-      }
-
-      const { data: problemRow, error: problemError } = await supabaseAdmin
-        .from('problems')
-        .insert({
-          user_id: req.user.id,
-          title: analysis.title,
-          subject: analysis.tags.big,
-          difficulty: 'medium',
-          time_ago: '刚刚',
-          tags: [analysis.tags.big, analysis.tags.mid, analysis.tags.small],
-          description: row.content,
-          created_at: new Date().toISOString()
-        })
-        .select('id')
-        .single();
-
-      if (problemError || !problemRow) {
-        throw problemError || new Error('写入 problems 失败');
-      }
-
-      const getOrCreateFolder = async (title, parentId) => {
-        let query = supabaseAdmin
-          .from('tree_nodes')
-          .select('id')
-          .eq('user_id', req.user.id)
-          .eq('type', 'folder')
-          .eq('title', title);
-
-        if (parentId) {
-          query = query.eq('parent_id', parentId);
-        } else {
-          query = query.is('parent_id', null);
-        }
-
-        const { data: existing } = await query.maybeSingle();
-        if (existing?.id) return existing.id;
-
-        const { data: created, error: createError } = await supabaseAdmin
-          .from('tree_nodes')
-          .insert({
-            user_id: req.user.id,
-            title,
-            type: 'folder',
-            parent_id: parentId || null,
-            sort_order: Date.now()
-          })
-          .select('id')
-          .single();
-
-        if (createError || !created) {
-          throw createError || new Error('创建目录失败');
-        }
-
-        return created.id;
-      };
-
-      const midId = await getOrCreateFolder(analysis.tags.mid, parentFolderId || null);
-      const smallId = await getOrCreateFolder(analysis.tags.small, midId);
-
-      const { error: nodeError } = await supabaseAdmin
-        .from('tree_nodes')
-        .insert({
-          user_id: req.user.id,
-          title: analysis.title,
-          type: 'file',
-          parent_id: smallId,
-          problem_id: problemRow.id,
-          sort_order: Date.now()
-        });
-
-      if (nodeError) {
-        throw nodeError;
-      }
-
-      insertedQuestions.push(questionRow);
-    } catch (error) {
-      console.error('保存题目失败:', error);
-      return res.status(500).json({ message: '保存题目失败' });
+  if (problemId) {
+    const { error: updateError } = await supabaseAdmin
+      .from('problems')
+      .update({ analysis_result: parsed })
+      .eq('id', problemId)
+      .eq('user_id', user.id);
+    if (updateError) {
+      return res.status(400).json({ message: updateError.message });
     }
   }
 
-  res.json({ questions: insertedQuestions });
+  res.json({ result: parsed });
+});
+
+app.get('/api/chat/history', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { problemId } = req.query || {};
+  if (!problemId) return res.status(400).json({ message: '缺少题目 ID' });
+
+  const { data, error } = await supabaseAdmin
+    .from('chat_messages')
+    .select('role, content, model, created_at')
+    .eq('user_id', user.id)
+    .eq('problem_id', problemId)
+    .order('created_at', { ascending: true });
+
+  if (error) return res.status(400).json({ message: error.message });
+  const messages = (data || []).map((row) => ({
+    role: row.role,
+    content: row.content,
+    model: row.model,
+    createdAt: row.created_at
+  }));
+  res.json({ messages });
+});
+
+app.post('/api/chat', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { message, model, context, history, problemId } = req.body || {};
+  if (!message) return res.status(400).json({ message: '消息不能为空' });
+  const usedModel = model || 'openai/gpt-4o-mini';
+  const safeHistory = Array.isArray(history)
+    ? history
+        .filter((item) => item && typeof item.content === 'string')
+        .map((item) => ({
+          role: item.role === 'ai' ? 'assistant' : 'user',
+          content: item.content
+        }))
+        .slice(-8)
+    : [];
+  const aiResult = await callChatCompletions({
+    model: usedModel,
+    messages: [
+      { role: 'system', content: '你是Flux Matrix的AI助教。Flux Matrix 是一个高端 AI 数学/全科题库与学习系统，主打“知识流动(Flux)”与“矩阵化组织(Matrix)”。当用户询问“Flux Matrix 是什么”或品牌相关问题时，直接用产品口吻简洁说明其定位、核心能力与使用价值，不要否认或回避。请优先回答用户的具体问题，不要默认完整解题；只有用户明确要求时再给出完整解法。必要时引用题干作为上下文。回答要简洁清晰。数学表达请使用 LaTeX，并用 $...$ 或 $$...$$ 包裹。若问题不清晰，请先追问。' },
+      ...(context ? [{ role: 'system', content: `题目背景（仅供参考，不要重复完整题干）：${context}` }] : []),
+      ...safeHistory,
+      { role: 'user', content: message }
+    ],
+    temperature: 0.7
+  });
+
+  if (!aiResult.ok) {
+    return res.status(400).json({ message: aiResult.error });
+  }
+  const reply = aiResult.data?.choices?.[0]?.message || { role: 'assistant', content: '' };
+
+  if (problemId) {
+    await supabaseAdmin
+      .from('chat_messages')
+      .insert([
+        {
+          user_id: user.id,
+          problem_id: problemId,
+          role: 'user',
+          content: message
+        },
+        {
+          user_id: user.id,
+          problem_id: problemId,
+          role: 'ai',
+          content: reply.content || '',
+          model: usedModel
+        }
+      ]);
+  }
+
+  res.json({ reply });
+});
+
+app.post('/api/practice/generate', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { problemText, subject, model, problemId } = req.body || {};
+  if (!problemText) return res.status(400).json({ message: '题目文本不能为空' });
+  if (!problemId) return res.status(400).json({ message: '缺少题目 ID' });
+
+  if (!OPENAI_API_KEY) {
+    return res.status(400).json({ message: '缺少 OPENAI_API_KEY' });
+  }
+
+  const prompt = [
+    '请基于给定题目生成一道同类型、同难度的练习题。',
+    subject ? `学科为：${subject}。` : '学科未知，请合理判断。',
+    '保持题型结构一致，但数值或条件不同。',
+    '只返回题目本身，不要给答案或解析。',
+    '数学表达必须使用 LaTeX，行内用 $...$，独立公式用 $$...$$。',
+    '严格输出 JSON：{"question":"..."}。'
+  ].join('\n');
+
+  const aiResponse = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      ...(OPENROUTER_REFERER ? { 'HTTP-Referer': OPENROUTER_REFERER } : {}),
+      ...(OPENROUTER_TITLE ? { 'X-Title': OPENROUTER_TITLE } : {})
+    },
+    body: JSON.stringify({
+      model: model || OPENAI_MODEL,
+      messages: [
+        { role: 'system', content: '你只输出 JSON。' },
+        { role: 'user', content: `${prompt}\n\n原题：\n${problemText}` }
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.7
+    })
+  });
+
+  const aiJson = await aiResponse.json();
+  const content = aiJson?.choices?.[0]?.message?.content || '';
+  try {
+    const parsedJson = parseJsonFromContent(content);
+    if (!parsedJson) throw new Error('invalid_json');
+    const parsed = parsedJson;
+    const question = parsed?.question || '';
+    if (!question) return res.status(400).json({ message: '生成题目为空' });
+
+    const { data: saved, error: saveError } = await supabaseAdmin
+      .from('practice_items')
+      .insert({
+        user_id: user.id,
+        problem_id: problemId,
+        model: model || OPENAI_MODEL,
+        question
+      })
+      .select('id, question, model, created_at')
+      .single();
+
+    if (saveError) return res.status(400).json({ message: saveError.message });
+    return res.json({ question: saved.question, id: saved.id, model: saved.model, createdAt: saved.created_at });
+  } catch (error) {
+    return res.status(400).json({ message: '模型返回格式不符合预期（practice/generate）' });
+  }
+});
+
+app.post('/api/practice/generate-v2', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { originalText, analysisContext, model, problemId } = req.body || {};
+  if (!originalText) return res.status(400).json({ message: '缺少原题文本' });
+  if (!problemId) return res.status(400).json({ message: '缺少题目 ID' });
+  const usedModel = model || 'openai/gpt-4o';
+
+  const normalizedContext = {
+    essence_one_sentence: analysisContext?.essence_one_sentence
+      || analysisContext?.title_essence
+      || '',
+    key_concepts: analysisContext?.learning_mode?.key_concepts
+      || analysisContext?.key_concepts
+      || [],
+    tags: analysisContext?.tags || {}
+  };
+
+  const systemPrompt = [
+    '你是一位资深的命题专家。',
+    '你的任务是基于一道“原题”及其“深度分析”，创作一道新的练习题。',
+    '',
+    '核心目标：生成一道同构题 (Isomorphic Problem)。',
+    '1. 灵魂不变：新题必须考察与原题完全相同的核心知识点（参考 input.analysisContext.essence_one_sentence）。',
+    '2. 肉体重塑：不要只替换数字，尽量结构变种；难度保持或略微提升（不超过 10%）。',
+    '3. 数值友好：计算结果要干净（整数/简单分数/常见无理数）。',
+    '',
+    '输出要求 (JSON)：',
+    '{',
+    '"new_question_text": "新题目的 LaTeX 文本",',
+    '"question_type": "选择/填空/解答",',
+    '"options": ["A...", "B...", "C...", "D..."] (如果是选择题),',
+    '"thinking_process": "详细的解题推导过程（AI自检用，确保答案正确）",',
+    '"correct_answer": "最终答案 (LaTeX)",',
+    '"explanation": "给用户的解析，重点讲解这道新题是如何运用原题知识点的"',
+    '}'
+  ].join('\n');
+
+  const aiResult = await callChatCompletions({
+    model: usedModel,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          originalText,
+          analysisContext: normalizedContext
+        })
+      }
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.7
+  });
+
+  if (!aiResult.ok) {
+    return res.status(400).json({ message: aiResult.error });
+  }
+
+  const content = aiResult.data?.choices?.[0]?.message?.content || '';
+  try {
+    const parsedJson = parseJsonFromContent(content);
+    if (!parsedJson) throw new Error('invalid_json');
+    const parsed = PracticeGenerateSchema.parse(parsedJson);
+    const options = Array.isArray(parsed.options) ? parsed.options : [];
+    const optionsText = options.length
+      ? options.map((opt, idx) => `${String.fromCharCode(65 + idx)}. ${opt}`).join('\n')
+      : '';
+    const questionText = optionsText
+      ? `${parsed.new_question_text}\n\n${optionsText}`
+      : parsed.new_question_text;
+
+    const { data: saved, error: saveError } = await supabaseAdmin
+      .from('practice_items')
+      .insert({
+        user_id: user.id,
+        problem_id: problemId,
+        model: usedModel,
+        question: questionText
+      })
+      .select('id, question, model, created_at')
+      .single();
+
+    if (saveError) return res.status(400).json({ message: saveError.message });
+    return res.json({
+      question: saved.question,
+      id: saved.id,
+      model: saved.model,
+      createdAt: saved.created_at,
+      payload: parsed
+    });
+  } catch (error) {
+    return res.status(400).json({ message: `模型返回格式不符合预期（${usedModel}）` });
+  }
+});
+
+app.post('/api/practice/grade-v2', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { userAnswer, correctAnswerContext, practiceId, model } = req.body || {};
+  if (!userAnswer) {
+    return res.status(400).json({ message: '缺少答案' });
+  }
+  if (!practiceId) {
+    return res.status(400).json({ message: '缺少练习题 ID' });
+  }
+  const usedModel = model || 'google/gemini-3-flash-preview';
+
+  const { data: practiceItem, error: practiceError } = await supabaseAdmin
+    .from('practice_items')
+    .select('question')
+    .eq('id', practiceId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+  if (practiceError) return res.status(400).json({ message: practiceError.message });
+  if (!practiceItem?.question) return res.status(404).json({ message: '练习题不存在' });
+
+  const systemPrompt = [
+    '你是一位严谨的数学阅卷专家。',
+    '你的任务是：',
+    '',
+    '1. 独立重做 (Re-solve)：不要盲目信任任何提供的参考答案。请先在内存中一步步推导这道题，确保每一步计算都绝对正确。',
+    '2. 语义比对 (Compare)：将你的计算结果与用户的 userAnswer 进行数学含义上的比对。',
+    '3. 生成报告 (Report)：输出判定结果和标准解析。',
+    '',
+    '判题规则：',
+    '- 数学等价性：忽略格式差异，只要数学本质相同即判定为正确。',
+    '- 思路认可：若过程关键步骤正确，即使最后一步算错也可部分肯定，但 is_correct 仍为 false。',
+    '',
+    '一致性要求：',
+    '- 先给出 final_answer_latex，再根据它判断 is_correct。',
+    '- 若 userAnswer 与 final_answer_latex 不等价，is_correct 必须为 false。',
+    '',
+    '输出要求 (JSON Only)：',
+    '{',
+    '"internal_calculation_check": "在此处写下你的草稿演算过程，强制你自己检查计算是否出错（此字段不展示给用户，仅用于保证精度）",',
+    '"is_correct": boolean,',
+    '"feedback": "给用户的简短点评。如果错了，指出具体错在哪一步，语气要鼓励。",',
+    '"standard_solution": {',
+    '  "steps": [',
+    '    { "seq": 1, "content": "第一步的详细推导（Markdown + LaTeX）" }',
+    '  ],',
+    '  "final_answer_latex": "最终的正确答案（LaTeX格式）"',
+    '}',
+    '}'
+  ].join('\n');
+
+  const aiResult = await callChatCompletions({
+    model: usedModel,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: JSON.stringify({ questionText: practiceItem.question, userAnswer, correctAnswerContext }) }
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.1
+  });
+
+  if (!aiResult.ok) {
+    return res.status(400).json({ message: aiResult.error });
+  }
+
+  const content = aiResult.data?.choices?.[0]?.message?.content || '';
+  try {
+    const parsedJson = parseJsonFromContent(content);
+    if (!parsedJson) throw new Error('invalid_json');
+    const parsed = PracticeGradeSchema.parse(parsedJson);
+    const { error: updateError } = await supabaseAdmin
+      .from('practice_items')
+      .update({
+        user_answer: userAnswer,
+        feedback: parsed,
+        checked_at: new Date().toISOString()
+      })
+      .eq('id', practiceId)
+      .eq('user_id', user.id);
+    if (updateError) return res.status(400).json({ message: updateError.message });
+    return res.json({ result: parsed });
+  } catch (error) {
+    return res.status(400).json({ message: `模型返回格式不符合预期（${usedModel}）` });
+  }
+});
+
+app.get('/api/practice/latest', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { problemId } = req.query || {};
+  if (!problemId) return res.status(400).json({ message: '缺少题目 ID' });
+
+  const { data, error } = await supabaseAdmin
+    .from('practice_items')
+    .select('id, question, model, created_at')
+    .eq('user_id', user.id)
+    .eq('problem_id', problemId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) return res.status(400).json({ message: error.message });
+  return res.json({ item: data || null });
+});
+
+app.get('/api/practice/list', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { problemId } = req.query || {};
+  if (!problemId) return res.status(400).json({ message: '缺少题目 ID' });
+
+  const { data, error } = await supabaseAdmin
+    .from('practice_items')
+    .select('id, question, model, created_at')
+    .eq('user_id', user.id)
+    .eq('problem_id', problemId)
+    .order('created_at', { ascending: false });
+
+  if (error) return res.status(400).json({ message: error.message });
+  return res.json({ items: data || [] });
+});
+
+app.post('/api/practice/check', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { userAnswer, model, practiceId } = req.body || {};
+  if (!userAnswer) {
+    return res.status(400).json({ message: '缺少答案' });
+  }
+  if (!practiceId) {
+    return res.status(400).json({ message: '缺少练习题 ID' });
+  }
+
+  if (!OPENAI_API_KEY) {
+    return res.status(400).json({ message: '缺少 OPENAI_API_KEY' });
+  }
+
+  const { data: practiceItem, error: practiceError } = await supabaseAdmin
+    .from('practice_items')
+    .select('question')
+    .eq('id', practiceId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+  if (practiceError) return res.status(400).json({ message: practiceError.message });
+  if (!practiceItem?.question) return res.status(404).json({ message: '练习题不存在' });
+
+  const prompt = [
+    '你是严格的题目批改老师，请根据题目与学生答案给出客观反馈。',
+    '必须判断答案是否正确，不能随意判对。',
+    '如果答案不完整、与题目无关或明显错误，判定 incorrect。',
+    '只输出 JSON，格式如下：',
+    '{"verdict":"correct|partial|incorrect","score":0-100,"summary":"...","strengths":["..."],"improvements":["..."],"next_steps":["..."],"correct_answer":"...","solution_steps":"..."}',
+    'summary 用简洁中文说明整体情况。',
+    'strengths/improvements/next_steps 每项尽量具体。',
+    '若判定 incorrect，必须给出正确答案或标准解法摘要。',
+    'solution_steps 给出题目解题思路或关键步骤（Markdown）。',
+    '数学表达使用 LaTeX，行内 $...$，独立 $$...$$。'
+  ].join('\n');
+
+  const aiResponse = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      ...(OPENROUTER_REFERER ? { 'HTTP-Referer': OPENROUTER_REFERER } : {}),
+      ...(OPENROUTER_TITLE ? { 'X-Title': OPENROUTER_TITLE } : {})
+    },
+    body: JSON.stringify({
+      model: model || OPENAI_MODEL,
+      messages: [
+        { role: 'system', content: '你只输出 JSON。' },
+        { role: 'user', content: `${prompt}\n\n题目：\n${practiceItem.question}\n\n学生答案：\n${userAnswer}` }
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.2
+    })
+  });
+
+  const aiJson = await aiResponse.json();
+  const content = aiJson?.choices?.[0]?.message?.content || '';
+  try {
+    const parsedJson = parseJsonFromContent(content);
+    if (!parsedJson) throw new Error('invalid_json');
+    const parsed = PracticeFeedbackSchema.parse(parsedJson);
+
+    const { error: updateError } = await supabaseAdmin
+      .from('practice_items')
+      .update({
+        user_answer: userAnswer,
+        feedback: parsed,
+        checked_at: new Date().toISOString()
+      })
+      .eq('id', practiceId)
+      .eq('user_id', user.id);
+
+    if (updateError) return res.status(400).json({ message: updateError.message });
+    return res.json({ feedback: parsed });
+  } catch (error) {
+    return res.status(400).json({ message: '模型返回格式不符合预期（practice/check）' });
+  }
+});
+
+app.get('/api/practice/feedback', async (req, res) => {
+  const user = await getUserFromRequest(req);
+  if (!user) return res.status(401).json({ message: '未登录' });
+
+  const { practiceId, problemId } = req.query || {};
+  if (!practiceId && !problemId) {
+    return res.status(400).json({ message: '缺少题目 ID 或练习题 ID' });
+  }
+
+  let query = supabaseAdmin
+    .from('practice_items')
+    .select('id, question, user_answer, feedback, model, created_at, checked_at')
+    .eq('user_id', user.id);
+
+  if (practiceId) {
+    query = query.eq('id', practiceId).maybeSingle();
+    const { data, error } = await query;
+    if (error) return res.status(400).json({ message: error.message });
+    return res.json({ item: data || null });
+  }
+
+  const { data, error } = await query
+    .eq('problem_id', problemId)
+    .not('feedback', 'is', null)
+    .order('checked_at', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) return res.status(400).json({ message: error.message });
+  return res.json({ item: data || null });
 });
 
 module.exports = app;
