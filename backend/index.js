@@ -380,6 +380,7 @@ const classifyQuestions = async ({ items, subject, existingCategories, model }) 
     '2) mid（中类）',
     '3) small（细化知识点）',
     '4) difficulty（难度，只能是 easy / medium / hard）',
+    'mid 与 small 必须使用中文，不要英文/拼音。',
     `big 固定为 "${subject}"。`,
     existingCategories.length
       ? `已有中类列表：${existingCategories.join(', ')}。请优先选用；没有合适再新建。`
@@ -936,18 +937,28 @@ app.post('/api/questions/batch', async (req, res) => {
     }
   }
 
-  const normalizedAiResults = await Promise.all(
-    (aiResults || []).map(async (item) => {
-      const mid = await normalizeTagWithAI({ subject: subjectText, aiProposedTag: item?.mid || '' });
-      const small = await normalizeTagWithAI({ subject: subjectText, aiProposedTag: item?.small || '' });
-      return { ...item, mid, small };
-    })
-  );
-
   const sanitizeTitle = (value) => {
     const trimmed = String(value || '').trim();
     return trimmed.replace(/[。．.!！?？、]+$/g, '').trim();
   };
+  const sanitizeFolderTag = (value) => {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return '';
+    const withoutEnglish = trimmed.replace(/[A-Za-z]/g, '');
+    return withoutEnglish.replace(/\s+/g, ' ').trim();
+  };
+
+  const normalizedAiResults = await Promise.all(
+    (aiResults || []).map(async (item) => {
+      const mid = sanitizeFolderTag(
+        await normalizeTagWithAI({ subject: subjectText, aiProposedTag: item?.mid || '' })
+      );
+      const small = sanitizeFolderTag(
+        await normalizeTagWithAI({ subject: subjectText, aiProposedTag: item?.small || '' })
+      );
+      return { ...item, mid, small };
+    })
+  );
 
   const problemRows = items.map((item, idx) => ({
     user_id: user.id,
@@ -966,7 +977,11 @@ app.post('/api/questions/batch', async (req, res) => {
         ? normalizedTags
         : forceParentOnly
           ? [subjectText].filter(Boolean)
-          : [subjectText, normalizedAiResults[idx]?.mid, normalizedAiResults[idx]?.small].filter(Boolean),
+          : [
+              subjectText,
+              sanitizeFolderTag(normalizedAiResults[idx]?.mid),
+              sanitizeFolderTag(normalizedAiResults[idx]?.small)
+            ].filter(Boolean),
     description: item.content || ''
   }));
 
